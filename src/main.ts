@@ -637,8 +637,8 @@ export default class PowerDeskPlugin extends Plugin {
 
 	/** A sticky notice, the way a meeting reminder should be: it waits to be
 	 *  dismissed, and joining is one click. Laid out as a card rather than as a
-	 *  paragraph, because the three things it has to answer — which meeting, how
-	 *  long have I got, how do I get in — are answered at three different
+	 *  paragraph, because the three things it has to answer, which meeting, how
+	 *  long have I got, how do I get in, are answered at three different
 	 *  glances, and a run-on line makes all three take the same effort. */
 	private showReminder(ev: PCEvent) {
 		const mins = Math.max(0, Math.round((ev.startMs - Date.now()) / 60000));
@@ -1268,7 +1268,7 @@ export default class PowerDeskPlugin extends Plugin {
 	}
 
 	/** One device-code session for `a`: `onCode` presents the fresh code,
-	 *  `cancelled` is consulted between polls. Resolves to the connected
+	 *  `canceled` is consulted between polls. Resolves to the connected
 	 *  account (persisted, calendars synced) once tokens are in, or null on
 	 *  cancel or timeout; definitive sign-in failures throw for the caller's
 	 *  UI. An identity that is already connected refreshes its existing row
@@ -1649,7 +1649,7 @@ export default class PowerDeskPlugin extends Plugin {
 		try {
 			if (def.kind === "m365") await deleteEvent(await this.graphTokenFor(def.account), ev.id);
 			else await deleteGoogleEvent(await this.googleTokenFor(def.account), def.calendarId, ev.id);
-			new Notice(ev.recurring ? "Power Desk: occurrence cancelled." : "Power Desk: event deleted.");
+			new Notice(ev.recurring ? "Power Desk: occurrence canceled." : "Power Desk: event deleted.");
 		} catch (e) {
 			this.anyErrorNotice(def.kind, e);
 		} finally {

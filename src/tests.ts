@@ -425,7 +425,7 @@ eq(periodLabel("day", "2026-07-18", true, 30, 3), "Jul 18 - 20, 2026", "a multi-
 // --- write-back geometry ---
 eq(snapMin(37), 30, "snap rounds to the nearer step");
 eq(snapMin(38), 45, "snap rounds up past the midpoint");
-eq(snapMin(50, 30), 60, "snap honours a custom step");
+eq(snapMin(50, 30), 60, "snap honors a custom step");
 {
 	const ev = evAt("2026-07-17", 540, 60); // 9:00-10:00
 	eq(dragTimes(ev.startMs, ev.endMs, "2026-07-17", 33, "move"), { startMs: msOfKey("2026-07-17") + 570 * 60000, endMs: msOfKey("2026-07-17") + 630 * 60000 }, "move snaps the start and keeps the duration");
@@ -678,10 +678,10 @@ const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-
 		"END:VEVENT"
 	);
 	const evs = parseIcsEvents(text, msOfKey("2026-07-12"), msOfKey("2026-07-19"), SRC);
-	eq(evs.length, 4, "ics: 5 dailies minus a cancelled override, with a moved one");
+	eq(evs.length, 4, "ics: 5 dailies minus a canceled override, with a moved one");
 	const moved = evs.find((e) => e.title === "Daily (moved)");
 	eq(moved?.startMs, Date.UTC(2026, 6, 15, 14, 0, 0), "ics: a moved override renders at its new time");
-	eq(evs.some((e) => e.startMs === Date.UTC(2026, 6, 16, 10, 0, 0)), false, "ics: a cancelled override leaves a hole");
+	eq(evs.some((e) => e.startMs === Date.UTC(2026, 6, 16, 10, 0, 0)), false, "ics: a canceled override leaves a hole");
 }
 
 {
@@ -749,7 +749,7 @@ const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-
 		"URL:https://example.com/ev/1",
 		"END:VEVENT",
 		"BEGIN:VEVENT",
-		"UID:cancelled-1",
+		"UID:canceled-1",
 		"DTSTART:20260718T170000Z",
 		"DTEND:20260718T180000Z",
 		"STATUS:CANCELLED",
@@ -768,7 +768,7 @@ const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-
 	eq(meta?.attendees, ["Bob", "carol@x.com"], "ics: attendees keep people, drop resources, fall back to address");
 	eq(meta?.joinUrl, "https://us02web.zoom.us/j/999", "ics: a join link is found in the location");
 	eq(meta?.url, "https://example.com/ev/1", "ics: the URL property maps");
-	eq(evs.some((e) => e.title === "Nope"), false, "ics: a cancelled single event drops");
+	eq(evs.some((e) => e.title === "Nope"), false, "ics: a canceled single event drops");
 	const dur = evs.find((e) => e.title === "By duration");
 	eq(dur && dur.endMs - dur.startMs, 45 * 60000, "ics: DURATION computes the end");
 }
@@ -1082,7 +1082,7 @@ END:VCALENDAR</cal:calendar-data>
 	eq(parseMessageBatch({ nope: 1 }, ids).failed, ids, "a reply without a responses array fails every id");
 	eq(parseMessageBatch({ responses: [] }, ids).failed.sort(), ["AAA", "BBB", "CCC"], "an empty responses array fails every id");
 	{
-		// a 200 with no body is not a success — there is nothing to cache
+		// a 200 with no body is not a success, there is nothing to cache
 		const out = parseMessageBatch({ responses: [{ id: "0", status: 200 }] }, ids);
 		ok(out.failed.includes("AAA"), "a 200 carrying no body is treated as a failure");
 	}

@@ -17,7 +17,7 @@ const MAX_ITERATIONS = 10000;
 
 /** All concrete event instances in one iCalendar payload that intersect
  *  [winStartMs, winEndMs). Recurring series expand client-side; EXDATEs and
- *  cancelled or moved overrides are honoured. Unparseable payloads throw so
+ *  canceled or moved overrides are honored. Unparseable payloads throw so
  *  the source can surface the error; a single busted VEVENT is skipped. */
 export function parseIcsEvents(text: string, winStartMs: number, winEndMs: number, src: IcsSourceInfo): PCEvent[] {
 	const comp = new ICAL.Component(ICAL.parse(text));

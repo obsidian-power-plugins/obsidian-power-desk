@@ -1,4 +1,4 @@
-/* Power Calendar: pure view logic. No Obsidian imports — everything here is
+/* Power Calendar: pure view logic. No Obsidian imports, everything here is
  * unit-tested with Node (npm test). Anything that touches the Obsidian API
  * lives in main.ts; anything that talks HTTP lives in graph.ts / caldav.ts. */
 
@@ -800,8 +800,8 @@ export function stripHtml(html: string): string {
 const JOIN_RE = /https:\/\/(?:teams\.microsoft\.com|teams\.live\.com|meet\.google\.com|[\w.-]*zoom\.us|[\w.-]*webex\.com|meet\.jit\.si)\/[^\s"'<>\])]+/i;
 
 /** What to call the thing a join link opens. A reminder that prints the link
- *  itself is unreadable — a Zoom URL carries a meeting id and a password token
- *  and wraps over three lines — and nobody reads it anyway: the Join button is
+ *  itself is unreadable, a Zoom URL carries a meeting id and a password token
+ *  and wraps over three lines, and nobody reads it anyway: the Join button is
  *  what gets clicked. The name is all the line has to say. An unrecognized host
  *  still beats the full URL, so it falls back to the bare domain. */
 export function meetingProvider(url: string | undefined | null): string {
@@ -1104,7 +1104,7 @@ export function parseWallClock(s: string): number | null {
 	return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
 }
 
-/** One Graph calendarView item to a PCEvent; null for cancelled or unreadable
+/** One Graph calendarView item to a PCEvent; null for canceled or unreadable
  *  items. calendarView expands recurrences server-side, so every item here is
  *  already a concrete instance. */
 export function graphToPC(ev: GraphEventLike, src: { sourceId: string; calendarName?: string; color?: string; writable?: boolean }): PCEvent | null {
@@ -1210,7 +1210,7 @@ export interface GoogleEventLike {
 }
 
 /** One Google events item (singleEvents expansion) to a PCEvent; null for
- *  cancelled or unreadable items. Timed values carry an RFC3339 offset, so
+ *  canceled or unreadable items. Timed values carry an RFC3339 offset, so
  *  Date.parse lands the exact instant; date-only values are local days. */
 export function googleToPC(ev: GoogleEventLike, src: { sourceId: string; calendarName?: string; color?: string; writable?: boolean }): PCEvent | null {
 	if (ev.status === "cancelled") return null;
@@ -1336,7 +1336,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /**
  * The same three-way rule, entry by entry.
  *
- * A key holding one value per item — per folder, per field, per speaker — is a
+ * A key holding one value per item (per folder, per field, per speaker) is a
  * whole vault's worth of settings behind a single name, and merging it whole
  * meant changing ONE of them published all of them. Every item another device
  * configured since this one last read was erased by a device that had never
