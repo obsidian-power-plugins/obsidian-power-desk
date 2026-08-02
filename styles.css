@@ -1,0 +1,2916 @@
+/* ============================================================= Power Calendar
+   Layout: header (nav / title / modes), body (one of four views), status bar.
+   Event elements carry --pcal-ev-color; their tint is a ::before overlay at
+   low opacity, so one hex works on light and dark themes alike. */
+
+.pcal-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0;
+	overflow: hidden;
+	user-select: none;
+}
+
+/* ---------------- header ---------------- */
+
+.pcal-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	padding: 8px 12px 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-nav {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.pcal-header button.pcal-icon-btn,
+.pcal-header button.pcal-today-btn,
+.pcal-status button.pcal-status-btn {
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: none;
+	padding: 4px 8px;
+	height: auto;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	cursor: default;
+}
+
+.pcal-header button.pcal-icon-btn:hover,
+.pcal-header button.pcal-today-btn:hover,
+.pcal-status button.pcal-status-btn:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.pcal-icon-btn .svg-icon {
+	width: 16px;
+	height: 16px;
+	vertical-align: -3px;
+}
+
+.pcal-icon-btn.is-loading .svg-icon {
+	animation: pcal-spin 1s linear infinite;
+}
+
+/* the funnel lights up whenever a filter hides anything */
+.pcal-header button.pcal-icon-btn.is-active {
+	color: var(--text-accent);
+}
+
+.pcal-mode-caret .svg-icon {
+	width: 11px;
+	height: 11px;
+	vertical-align: -2px;
+	margin-left: 3px;
+	color: var(--text-faint);
+}
+
+.pcal-filter-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.pcal-header button.pcal-new-btn,
+.pcal-mail-header button.pcal-new-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border: none;
+	border-radius: var(--radius-s);
+	box-shadow: none;
+	padding: 4px 10px;
+	height: auto;
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-medium);
+	cursor: default;
+}
+
+.pcal-header button.pcal-new-btn:hover,
+.pcal-mail-header button.pcal-new-btn:hover {
+	background: var(--interactive-accent-hover);
+}
+
+/* Obsidian's own view header repeats the tab title and costs a full row;
+   the mail view carries everything it needs in its own toolbar */
+.workspace-leaf-content[data-type="power-calendar-mail"] .view-header {
+	display: none;
+}
+
+/* the mail ribbon: labeled actions on the selected message, left-aligned */
+.pcal-mail-tools {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	flex-wrap: wrap;
+}
+
+/* drag the seams; the widths stick per device */
+.pcal-mail-splitter {
+	flex: 0 0 4px;
+	cursor: col-resize;
+	border-radius: 2px;
+}
+
+.pcal-mail-splitter:hover {
+	background: var(--interactive-accent);
+	opacity: 0.4;
+}
+
+/* multi-selected rows wear a soft accent wash until an action lands */
+.pcal-mail-row.is-multisel {
+	background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary));
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+
+.pcal-mail-header button.pcal-mail-tool {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.pcal-mail-tool-label {
+	font-size: var(--font-ui-small);
+}
+
+.pcal-mail-tool.is-disabled {
+	opacity: 0.45;
+}
+
+.pcal-header button.pcal-new-btn .pcal-mode-caret .svg-icon {
+	color: var(--text-on-accent);
+}
+
+@keyframes pcal-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.pcal-title {
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-large);
+	color: var(--text-normal);
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	border-radius: 6px;
+	padding: 0 6px;
+	cursor: default;
+}
+
+.pcal-title:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-header-right {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.pcal-modes {
+	display: flex;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 7px;
+	padding: 2px;
+	gap: 2px;
+}
+
+/* the compound selector outranks Obsidian's own button chrome so the
+   segmented control renders flat */
+.pcal-modes button.pcal-mode-btn,
+.pcal-modes button.pcal-mode-btn:hover,
+.pcal-modes button.pcal-mode-btn:focus,
+.pcal-modes button.pcal-mode-btn:focus-visible,
+.pcal-modes button.pcal-mode-btn:active {
+	background: transparent;
+	border: none;
+	border-radius: 5px;
+	box-shadow: none;
+	outline: none;
+	margin: 0;
+	padding: 3px 10px;
+	height: auto;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	cursor: default;
+}
+
+.pcal-modes button.pcal-mode-btn:hover {
+	color: var(--text-normal);
+}
+
+.pcal-modes button.pcal-mode-btn.is-active {
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-weight: var(--font-medium);
+	box-shadow: var(--shadow-s);
+}
+
+/* ---------------- body ---------------- */
+
+.pcal-main {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+
+.pcal-body {
+	flex: 1;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+/* ---------------- the sidebar rail ---------------- */
+
+.pcal-sidebar {
+	width: 224px;
+	flex-shrink: 0;
+	overflow-y: auto;
+	border-right: 1px solid var(--background-modifier-border);
+	padding: 8px 10px 12px 2px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.pcal-sidebar.is-hidden {
+	display: none;
+}
+
+.pcal-sb-mini {
+	margin-bottom: 10px;
+}
+
+.pcal-mini-day.is-anchor {
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+	border-radius: 50%;
+}
+
+/* accounts sit indented beneath the CALENDARS header they belong to */
+.pcal-sb-group {
+	margin: 10px 0 2px 12px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-medium);
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+}
+
+.pcal-sb-row {
+	margin-left: 12px;
+}
+
+.pcal-sb-row {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 3px 6px;
+	border-radius: 5px;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	cursor: default;
+}
+
+.pcal-sb-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-sb-row.is-off {
+	color: var(--text-faint);
+}
+
+.pcal-sb-row.is-off .pcal-sb-dot {
+	opacity: 0.25;
+}
+
+.pcal-sb-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 3px;
+	flex-shrink: 0;
+}
+
+.pcal-sb-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-sb-menu-dot {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	border-radius: 3px;
+	margin-right: 8px;
+	vertical-align: -1px;
+}
+
+/* section headers fold the calendar list; the agenda lives below */
+.pcal-sb-section {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	margin: 10px 0 2px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+	cursor: default;
+}
+
+.pcal-sb-chev .svg-icon {
+	width: 12px;
+	height: 12px;
+	vertical-align: -2px;
+}
+
+/* a clear seam between the calendar list and the agenda */
+.pcal-sb-agenda-head {
+	margin-top: 18px;
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 12px;
+}
+
+.pcal-sb-dayhead {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 6px;
+	margin: 8px 0 2px;
+	padding: 2px 6px;
+	border-radius: 5px;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	cursor: default;
+}
+
+.pcal-sb-dayhead:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-sb-weather {
+	font-weight: var(--font-normal);
+	color: var(--text-faint);
+	white-space: nowrap;
+}
+
+.pcal-sb-noevents {
+	padding: 1px 6px;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+.pcal-sb-ev {
+	display: flex;
+	align-items: flex-start;
+	gap: 7px;
+	padding: 2px 6px;
+	border-radius: 5px;
+	cursor: default;
+}
+
+.pcal-sb-ev:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-sb-ev .pcal-sb-dot {
+	margin-top: 4px;
+}
+
+.pcal-sb-ev-text {
+	min-width: 0;
+}
+
+.pcal-sb-ev-title {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-sb-ev-time {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+/* ---------------- full screen ---------------- */
+
+.pcal-fullscreen {
+	position: fixed;
+	inset: 0;
+	z-index: var(--layer-popover);
+	background: var(--background-primary);
+	padding: 8px 12px 4px;
+}
+
+/* ---------------- shared event elements ---------------- */
+
+.pcal-span,
+.pcal-block,
+.pcal-chip,
+.pcal-agenda-row {
+	position: relative;
+	--pcal-ev-color: var(--interactive-accent);
+}
+
+/* an opaque base under the tint, so hour lines never bleed through events */
+.pcal-span,
+.pcal-block {
+	background: var(--background-primary);
+}
+
+.pcal-span::before,
+.pcal-block::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: var(--pcal-ev-color);
+	opacity: 0.14;
+	border-radius: inherit;
+	pointer-events: none;
+}
+
+.pcal-span:hover::before,
+.pcal-block:hover::before {
+	opacity: 0.24;
+}
+
+.is-tentative.pcal-span::before,
+.is-tentative.pcal-block::before,
+.is-tentative.pcal-chip::before {
+	opacity: 0.1;
+	background: repeating-linear-gradient(45deg, var(--pcal-ev-color) 0 5px, transparent 5px 10px);
+}
+
+/* an invite you have not answered yet wears the awaiting-response wash
+   (color set in Settings); it outranks the tentative hatching */
+.is-needsaction.pcal-span::before,
+.is-needsaction.pcal-block::before,
+.is-needsaction.pcal-chip::before {
+	background: var(--pcal-needsaction, #f2c94c);
+	opacity: 0.25;
+}
+
+.is-declined {
+	opacity: 0.55;
+}
+
+.is-declined .pcal-chip-title,
+.is-declined .pcal-block-title,
+.is-declined .pcal-span-title,
+.is-declined .pcal-agenda-title {
+	text-decoration: line-through;
+}
+
+/* a linked note exists: a small accent dot in the corner */
+.pcal-span.has-note::after,
+.pcal-block.has-note::after {
+	content: "";
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--pcal-ev-color);
+}
+
+.pcal-chip.has-note .pcal-chip-title::after {
+	content: "";
+	display: inline-block;
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--pcal-ev-color);
+	margin-left: 4px;
+	vertical-align: 2px;
+}
+
+/* ---------------- month ---------------- */
+
+.pcal-month {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.pcal-month-head {
+	display: grid;
+	grid-template-columns: repeat(7, 1fr);
+	padding-right: var(--size-4-1);
+}
+
+.pcal-month-headcell {
+	text-align: center;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	padding: 4px 0 3px;
+}
+
+.pcal-month-grid {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+}
+
+.pcal-month-row {
+	position: relative;
+	flex: 1;
+	min-height: 96px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.pcal-month-cells {
+	display: grid;
+	grid-template-columns: repeat(7, 1fr);
+	height: 100%;
+}
+
+.pcal-month-cell {
+	min-width: 0;
+	padding: 2px 3px;
+	border-right: 1px solid var(--background-modifier-border);
+	overflow: hidden;
+}
+
+.pcal-month-cell:last-child {
+	border-right: none;
+}
+
+.pcal-month-cell.is-other-month {
+	color: var(--text-faint);
+	background: var(--background-secondary-alt);
+}
+
+.pcal-month-cell.pcal-range {
+	background: hsla(var(--interactive-accent-hsl), 0.1);
+}
+
+.pcal-month-daynum {
+	width: 22px;
+	height: 20px;
+	line-height: 20px;
+	text-align: center;
+	border-radius: 10px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.pcal-month-daynum:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.pcal-month-cell.is-other-month .pcal-month-daynum {
+	color: var(--text-faint);
+}
+
+.pcal-month-cell.is-today .pcal-month-daynum {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-weight: var(--font-semibold);
+}
+
+.pcal-row-spans {
+	position: absolute;
+	top: 24px;
+	left: 0;
+	right: 0;
+	pointer-events: none;
+	z-index: 2;
+}
+
+.pcal-span {
+	pointer-events: auto;
+	position: absolute;
+	height: 20px;
+	line-height: 20px;
+	border-radius: 5px;
+	border-left: 3px solid var(--pcal-ev-color);
+	padding: 0 6px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	cursor: default;
+}
+
+.pcal-span.continues-left {
+	border-left: none;
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+}
+
+.pcal-span.continues-right {
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+}
+
+.pcal-span-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-month-chips {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.pcal-chip {
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+	padding: 0 3px 0 5px;
+	border-radius: 4px;
+	font-size: var(--font-ui-smaller);
+	line-height: 19px;
+	white-space: nowrap;
+	overflow: hidden;
+	cursor: default;
+}
+
+/* the chip wears its calendar color as a subtle wash, Outlook-style, on an
+   opaque base so cell chrome never shows through */
+.pcal-chip {
+	background: var(--background-primary);
+}
+
+.pcal-chip::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: var(--pcal-ev-color);
+	opacity: 0.12;
+	border-radius: inherit;
+	pointer-events: none;
+}
+
+.pcal-chip:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-chip-time {
+	color: var(--text-faint);
+	font-size: 10px;
+	flex-shrink: 0;
+}
+
+.pcal-chip-title {
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
+
+button.pcal-more-btn,
+button.pcal-more-btn:hover {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 0 5px;
+	height: auto;
+	text-align: left;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	cursor: default;
+}
+
+button.pcal-more-btn:hover {
+	color: var(--text-normal);
+}
+
+/* ---------------- week / day ---------------- */
+
+.pcal-week {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.pcal-gutter-spacer {
+	width: 52px;
+	flex-shrink: 0;
+}
+
+.pcal-week-head {
+	display: flex;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-week-headcells {
+	flex: 1;
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: minmax(0, 1fr);
+}
+
+.pcal-week-headcell {
+	display: flex;
+	align-items: baseline;
+	justify-content: center;
+	gap: 5px;
+	padding: 6px 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+.pcal-week-headcell:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-week-headnum {
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	min-width: 24px;
+	height: 24px;
+	line-height: 24px;
+	text-align: center;
+	border-radius: 12px;
+}
+
+.pcal-week-headcell.is-today .pcal-week-headnum {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.pcal-allday {
+	display: flex;
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding: 3px 0;
+}
+
+.pcal-allday-label {
+	font-size: 10px;
+	color: var(--text-faint);
+	text-align: right;
+	padding-right: 8px;
+	align-self: center;
+}
+
+.pcal-allday-lanes {
+	flex: 1;
+	position: relative;
+}
+
+.pcal-allday-lanes .pcal-span {
+	height: 22px;
+	line-height: 22px;
+}
+
+.pcal-week-scroll {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	display: flex;
+}
+
+.pcal-gutter {
+	width: 52px;
+	flex-shrink: 0;
+	position: relative;
+	height: 1152px; /* 24 * HOUR_H */
+}
+
+.pcal-gutter-hour {
+	position: absolute;
+	right: 8px;
+	transform: translateY(-50%);
+	font-size: 10px;
+	color: var(--text-faint);
+	white-space: nowrap;
+	display: flex;
+	gap: 7px;
+	justify-content: flex-end;
+}
+
+/* a second zone widens the gutter; the spacers above must follow */
+.pcal-has-tz2 .pcal-gutter,
+.pcal-has-tz2 .pcal-gutter-spacer {
+	width: 98px;
+}
+
+.pcal-hour-tz2 {
+	color: var(--text-accent);
+	opacity: 0.75;
+}
+
+.pcal-week-cols {
+	flex: 1;
+	position: relative;
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: minmax(0, 1fr);
+	height: 1152px;
+}
+
+.pcal-week-col {
+	position: relative;
+	border-left: 1px solid var(--background-modifier-border);
+	background-image: repeating-linear-gradient(to bottom, var(--background-modifier-border) 0 1px, transparent 1px 48px);
+	background-position: 0 -1px;
+}
+
+.pcal-week-col.is-today {
+	background-color: hsla(var(--interactive-accent-hsl), 0.045);
+}
+
+.pcal-block {
+	position: absolute;
+	border-radius: 5px;
+	border-left: 3px solid var(--pcal-ev-color);
+	padding: 2px 6px;
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	cursor: default;
+	z-index: 3;
+}
+
+.pcal-block-title {
+	color: var(--text-normal);
+	font-weight: var(--font-medium);
+	line-height: 1.25;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-block-time {
+	color: var(--text-muted);
+	font-size: 10px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* an editable block mid-drag rides above its neighbours */
+.pcal-block.pcal-dragging {
+	opacity: 0.75;
+	z-index: 9;
+	box-shadow: var(--shadow-s);
+	pointer-events: none;
+}
+
+/* the resize affordance: a short bar at the bottom edge, visible on hover */
+.pcal-grip {
+	position: absolute;
+	left: 30%;
+	right: 30%;
+	bottom: 1px;
+	height: 3px;
+	border-radius: 2px;
+	background: var(--pcal-ev-color);
+	opacity: 0;
+	pointer-events: none;
+}
+
+.pcal-block.pcal-can-edit:hover .pcal-grip {
+	opacity: 0.5;
+}
+
+/* the drafted slot while dragging across empty grid */
+.pcal-ghost {
+	position: absolute;
+	left: 2px;
+	right: 3px;
+	border: 1.5px dashed var(--interactive-accent);
+	border-radius: 5px;
+	background: hsla(var(--interactive-accent-hsl), 0.12);
+	z-index: 4;
+	pointer-events: none;
+	font-size: 10px;
+	color: var(--text-muted);
+	padding: 2px 6px;
+	overflow: hidden;
+}
+
+.pcal-now-line {
+	position: absolute;
+	left: 0;
+	right: 0;
+	height: 2px;
+	background: var(--color-red);
+	z-index: 5;
+	pointer-events: none;
+}
+
+/* the same instant, faint, across every visible day */
+.pcal-now-line-week {
+	position: absolute;
+	left: 0;
+	right: 0;
+	height: 1px;
+	background: var(--color-red);
+	opacity: 0.3;
+	z-index: 4;
+	pointer-events: none;
+}
+
+/* the clock riding the gutter at the now line */
+.pcal-now-badge {
+	position: absolute;
+	right: 3px;
+	transform: translateY(-50%);
+	background: var(--color-red);
+	color: #fff;
+	font-size: 9px;
+	font-weight: var(--font-semibold);
+	line-height: 1;
+	padding: 2px 4px;
+	border-radius: 4px;
+	z-index: 6;
+	pointer-events: none;
+	white-space: nowrap;
+}
+
+.pcal-now-dot {
+	position: absolute;
+	left: -3px;
+	top: -3px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--color-red);
+}
+
+/* ---------------- agenda ---------------- */
+
+.pcal-agenda {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 6px 14px 20px;
+	max-width: 760px;
+	width: 100%;
+	margin: 0 auto;
+}
+
+.pcal-agenda-head {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	padding: 14px 2px 4px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-agenda-day.is-today .pcal-agenda-head {
+	color: var(--text-accent);
+}
+
+.pcal-agenda-head:hover {
+	color: var(--text-normal);
+}
+
+.pcal-agenda-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 5px 4px;
+	border-radius: 6px;
+	cursor: default;
+}
+
+.pcal-agenda-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-agenda-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--pcal-ev-color);
+	flex-shrink: 0;
+}
+
+.pcal-agenda-time {
+	width: 62px;
+	flex-shrink: 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+.pcal-agenda-main {
+	min-width: 0;
+	flex: 1;
+}
+
+.pcal-agenda-title {
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-agenda-row.has-note .pcal-agenda-title::after {
+	content: "";
+	display: inline-block;
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--pcal-ev-color);
+	margin-left: 5px;
+	vertical-align: 2px;
+}
+
+.pcal-agenda-sub {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-agenda-row button.pcal-join-btn {
+	border: none;
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	padding: 2px 4px;
+	height: auto;
+}
+
+.pcal-agenda-row button.pcal-join-btn:hover {
+	color: var(--text-accent);
+}
+
+.pcal-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	padding: 48px 16px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+/* ---------------- status bar ---------------- */
+
+.pcal-status {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 4px 12px;
+	border-top: 1px solid var(--background-modifier-border);
+	min-height: 26px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.pcal-status-chips {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.pcal-status-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	white-space: nowrap;
+}
+
+.pcal-status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.pcal-status-chip.has-error {
+	color: var(--color-red);
+}
+
+.pcal-status-chip.has-error .pcal-status-dot {
+	box-shadow: 0 0 0 2px rgba(var(--color-red-rgb), 0.35);
+}
+
+.pcal-status-chip.is-loading {
+	opacity: 0.6;
+}
+
+.pcal-status-updated {
+	margin-left: auto;
+	color: var(--text-faint);
+	white-space: nowrap;
+}
+
+/* ---------------- event card ---------------- */
+
+.pcal-card {
+	position: fixed;
+	z-index: var(--layer-menu);
+	width: 340px;
+	max-width: calc(100vw - 16px);
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	box-shadow: var(--shadow-l, var(--shadow-s));
+	padding: 12px 14px;
+	user-select: text;
+}
+
+.pcal-card-context {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-bottom: 6px;
+}
+
+.pcal-card-cal-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+	background: var(--pcal-ev-color);
+	flex-shrink: 0;
+}
+
+.pcal-card-head {
+	display: flex;
+	gap: 10px;
+}
+
+button.pcal-card-more {
+	padding: 4px 9px;
+}
+
+button.pcal-card-more .svg-icon {
+	width: 14px;
+	height: 14px;
+	vertical-align: -3px;
+}
+
+.pcal-card-bar {
+	width: 4px;
+	border-radius: 2px;
+	background: var(--pcal-ev-color, var(--interactive-accent));
+	flex-shrink: 0;
+}
+
+.pcal-card-headtext {
+	min-width: 0;
+}
+
+.pcal-card-title {
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	line-height: 1.3;
+}
+
+.pcal-card-when {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: 2px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.pcal-card-repeat .svg-icon {
+	width: 12px;
+	height: 12px;
+	vertical-align: -2px;
+	color: var(--text-faint);
+}
+
+.pcal-card-meta {
+	margin-top: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.pcal-card-row {
+	display: flex;
+	gap: 8px;
+	align-items: baseline;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+.pcal-card-icon .svg-icon {
+	width: 13px;
+	height: 13px;
+	vertical-align: -2px;
+	color: var(--text-faint);
+}
+
+.pcal-card-desc {
+	margin-top: 8px;
+	padding: 8px 10px;
+	border-radius: 7px;
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	line-height: 1.4;
+	white-space: pre-wrap;
+	max-height: 140px;
+	overflow-y: auto;
+}
+
+.pcal-card-rsvp {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 10px;
+}
+
+.pcal-rsvp-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-right: 2px;
+}
+
+.pcal-card-rsvp button.pcal-rsvp-btn {
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	box-shadow: none;
+	padding: 2px 12px;
+	height: auto;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	cursor: default;
+}
+
+.pcal-card-rsvp button.pcal-rsvp-btn:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.pcal-card-rsvp button.pcal-rsvp-btn.is-active {
+	background: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.pcal-card-btns {
+	display: flex;
+	gap: 8px;
+	margin-top: 12px;
+	flex-wrap: wrap;
+}
+
+/* ---------------- modals ---------------- */
+
+.pcal-modal-desc {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: 0 0 12px;
+}
+
+.pcal-modal-btns {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 16px;
+}
+
+.pcal-modal-btns.pcal-left {
+	justify-content: flex-start;
+	margin-top: 8px;
+}
+
+.pcal-devicecode {
+	font-family: var(--font-monospace);
+	font-size: 1.7em;
+	letter-spacing: 0.18em;
+	text-align: center;
+	padding: 10px 0 4px;
+	color: var(--text-normal);
+	user-select: text;
+}
+
+.pcal-devicecode-url {
+	text-align: center;
+	user-select: text;
+}
+
+/* settings: account group headers stand apart; details indent beneath */
+.pcal-account-head {
+	margin-top: 14px;
+	border-left: 2px solid var(--interactive-accent);
+	padding-left: 10px;
+}
+
+.pcal-account-head .setting-item-name {
+	font-weight: var(--font-semibold);
+}
+
+/* the add-account wizard */
+.pcal-wizard-progress {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	margin: 0 0 10px;
+}
+
+.pcal-wizard-card {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: 10px 12px;
+	margin: 0 0 8px;
+	cursor: pointer;
+	transition: border-color 120ms ease, background 120ms ease;
+}
+
+.pcal-wizard-card:hover {
+	border-color: var(--interactive-accent);
+	background: var(--background-secondary);
+}
+
+.pcal-wizard-card-title {
+	font-weight: var(--font-semibold);
+	margin-bottom: 2px;
+}
+
+.pcal-wizard-error {
+	border: 1px solid var(--background-modifier-error);
+	border-radius: var(--radius-s);
+	padding: 8px 10px;
+	margin-top: 6px;
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+/* the Azure app-registration walkthrough */
+.pcal-guide-step {
+	display: flex;
+	gap: 10px;
+	margin: 0 0 14px;
+}
+
+.pcal-guide-step-num {
+	flex: 0 0 auto;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin-top: 1px;
+}
+
+.pcal-guide-step-body {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-guide-step-title {
+	font-weight: var(--font-semibold);
+	margin-bottom: 2px;
+}
+
+.pcal-guide-text {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.pcal-guide-url-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 6px 0;
+}
+
+.pcal-guide-url {
+	flex: 1;
+	min-width: 0;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	padding: 4px 8px;
+	user-select: text;
+	overflow-wrap: anywhere;
+}
+
+.pcal-guide-id-input {
+	flex: 1;
+	min-width: 0;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+}
+
+.pcal-guide-fields {
+	margin: 6px 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	overflow: hidden;
+}
+
+.pcal-guide-field {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 10px;
+	font-size: var(--font-ui-small);
+}
+
+.pcal-guide-field-copy {
+	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
+	padding: 2px 8px;
+	height: auto;
+}
+
+.pcal-guide-field + .pcal-guide-field {
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.pcal-guide-field-name {
+	flex: 0 0 38%;
+	color: var(--text-muted);
+}
+
+.pcal-guide-field-value {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-guide-field-example {
+	font-weight: var(--font-medium);
+	user-select: text;
+}
+
+.pcal-guide-field-note {
+	color: var(--text-faint);
+}
+
+/* the event modal breathes: the box is wider and text fields take the row */
+.pcal-event-modal {
+	width: 34em;
+	max-width: 82vw;
+}
+
+.pcal-event-modal .setting-item-info {
+	flex: 0 0 32%;
+}
+
+.pcal-event-modal .setting-item-control {
+	flex: 1 1 auto;
+}
+
+.pcal-event-modal .setting-item-control input[type="text"],
+.pcal-event-modal .setting-item-control textarea {
+	flex: 1;
+	width: 100%;
+}
+
+/* native date/time inputs in the event modal, side by side */
+.pcal-event-modal input[type="date"],
+.pcal-event-modal input[type="time"] {
+	background: var(--background-modifier-form-field);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 5px;
+	padding: 4px 8px;
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	color-scheme: dark light;
+}
+
+.pcal-modal-status {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	min-height: 20px;
+	margin: 4px 0;
+}
+
+.pcal-dav-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	max-height: 200px;
+	overflow-y: auto;
+	margin: 4px 0;
+}
+
+.pcal-dav-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
+
+.pcal-dav-swatch {
+	width: 12px;
+	height: 12px;
+	border-radius: 3px;
+	flex-shrink: 0;
+}
+
+/* ---------------- the triage inbox ---------------- */
+
+.pcal-mail-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0;
+	overflow: hidden;
+}
+
+.pcal-mail-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* the Favorites block above the folder tree */
+.pcal-folder-favhead {
+	margin: 6px 6px 2px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+}
+
+/* the folder name keeps its width; the account suffix yields and truncates */
+.pcal-fav-row .pcal-folder-name {
+	flex: 0 1 auto;
+}
+
+/* the count holds the right edge whether or not an account tag fills the middle */
+.pcal-fav-row .pcal-folder-count {
+	margin-left: auto;
+}
+
+.pcal-fav-acct {
+	flex: 1 1 30px;
+	min-width: 0;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	margin-left: 4px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-folder-searchhead {
+	margin: 8px 6px 2px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+}
+
+.pcal-folder-addsearch .pcal-folder-name {
+	color: var(--text-muted);
+}
+
+.pcal-folder-row.pcal-drop-target {
+	box-shadow: inset 0 2px 0 var(--interactive-accent);
+}
+
+/* sender avatars, Outlook-style */
+.pcal-mail-avatar {
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	color: #fff;
+	font-size: 12px;
+	font-weight: var(--font-semibold);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	user-select: none;
+}
+
+/* the Outlook checkbox rides over the avatar on hover, or always while a
+   selection is active */
+.pcal-mail-row {
+	position: relative;
+}
+
+.pcal-mail-check {
+	display: none;
+	position: absolute;
+	left: 14px;
+	top: 50%;
+	transform: translateY(-50%);
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-muted);
+	cursor: default;
+	z-index: 2;
+}
+
+.pcal-mail-check:hover {
+	color: var(--text-accent);
+}
+
+.pcal-mail-check .svg-icon {
+	width: 16px;
+	height: 16px;
+}
+
+.pcal-mail-row:hover .pcal-mail-check,
+.pcal-mail-list.has-multisel .pcal-mail-check,
+.pcal-mail-list.select-mode .pcal-mail-check {
+	display: flex;
+}
+
+/* the checkbox takes the avatar's place outright, no peeking circle */
+.pcal-mail-row:hover .pcal-mail-avatar,
+.pcal-mail-list.has-multisel .pcal-mail-avatar,
+.pcal-mail-list.select-mode .pcal-mail-avatar {
+	visibility: hidden;
+}
+
+.pcal-folder-hiddenrow .pcal-folder-name {
+	color: var(--text-faint);
+}
+
+/* its count keeps the row's quiet voice, right-aligned like the rest */
+.pcal-folder-hiddenrow .pcal-folder-count {
+	color: var(--text-faint);
+	font-weight: var(--font-normal);
+}
+
+/* unread: a firm bar, a bold name, an accent subject */
+.pcal-mail-row.is-unread {
+	box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+
+.pcal-mail-row.is-unread .pcal-mail-from {
+	font-weight: var(--font-bold);
+	color: var(--text-normal);
+}
+
+.pcal-mail-row.is-unread .pcal-mail-subject {
+	color: var(--text-accent);
+	font-weight: var(--font-medium);
+}
+
+/* HTML mail on its own light card, readable in both themes */
+.pcal-mail-html {
+	background: #ffffff;
+	color: #1f2328;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 14px 16px;
+	overflow-x: auto;
+}
+
+.pcal-mail-html img {
+	max-width: 100%;
+	height: auto;
+}
+
+.pcal-mail-html a {
+	color: #0b6bcb;
+}
+
+.pcal-mail-html table {
+	max-width: 100%;
+}
+
+/* the search-folder dialog: full-width matching fields */
+/* stacked rows: the label sits above its full-width control, so long labels
+   never squeeze into a narrow wrapping side column */
+.pcal-searchfolder-modal .setting-item {
+	display: block;
+	border-top: none;
+	padding: 8px 0;
+}
+
+.pcal-searchfolder-modal .setting-item-info {
+	margin-bottom: 4px;
+}
+
+.pcal-searchfolder-modal .setting-item-control {
+	justify-content: flex-start;
+}
+
+.pcal-searchfolder-modal .setting-item-control input[type="text"],
+.pcal-searchfolder-modal .setting-item-control select,
+.pcal-searchfolder-modal .setting-item-control .dropdown {
+	flex: 1;
+	width: 100%;
+}
+
+/* compose and reply float in a resizable window, Outlook-style */
+.pcal-compose-window {
+	resize: both;
+	overflow: auto;
+	width: 620px;
+	min-width: 440px;
+	min-height: 300px;
+	max-width: 95vw;
+	max-height: 90vh;
+}
+
+.pcal-compose-window .modal-content {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.pcal-compose {
+	gap: 6px;
+}
+
+.pcal-compose-from {
+	margin: 0 0 4px;
+}
+
+.pcal-compose-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.pcal-compose-label {
+	flex: 0 0 52px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.pcal-compose-row input {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-compose-bar {
+	display: flex;
+	gap: 1px;
+	padding: 3px 0;
+	border-top: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin-bottom: 6px;
+}
+
+/* the editor is a light card like rendered mail, so quoted HTML reads true */
+.pcal-compose-editor {
+	flex: 1 1 auto;
+	min-height: 220px;
+	overflow-y: auto;
+	background: #ffffff;
+	color: #1f2328;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 12px 14px;
+	user-select: text;
+	cursor: text;
+}
+
+.pcal-compose-editor:focus {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: -1px;
+}
+
+.pcal-compose-editor img {
+	max-width: 100%;
+	height: auto;
+}
+
+.pcal-compose-editor a {
+	color: #0b6bcb;
+}
+
+.pcal-compose-loading {
+	color: #8a8f98;
+}
+
+/* the attachment bar under the action buttons */
+.pcal-mail-atts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 8px 0 2px;
+}
+
+.pcal-mail-att {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 7px;
+	padding: 5px 10px;
+	max-width: 240px;
+	cursor: default;
+}
+
+.pcal-mail-att:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-accent);
+}
+
+.pcal-mail-att-icon .svg-icon {
+	width: 16px;
+	height: 16px;
+	color: var(--text-muted);
+}
+
+.pcal-mail-att-text {
+	min-width: 0;
+}
+
+.pcal-mail-att-name {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-mail-att-size {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.pcal-mail-att-note {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+}
+
+.pcal-mail-header button.pcal-icon-btn {
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: none;
+	padding: 4px 8px;
+	height: auto;
+	color: var(--text-muted);
+	cursor: default;
+}
+
+.pcal-mail-header button.pcal-icon-btn:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.pcal-mail-title {
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-large);
+	color: var(--text-normal);
+}
+
+.pcal-mail-searchrow {
+	display: flex;
+	gap: 6px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-mail-searchrow input {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-mail-body {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+
+/* the folder pane, Outlook-style */
+.pcal-mail-folders {
+	width: 200px;
+	min-width: 160px;
+	flex-shrink: 0;
+	overflow-y: auto;
+	border-right: 1px solid var(--background-modifier-border);
+	padding: 6px 4px;
+}
+
+.pcal-folders-hidden .pcal-mail-folders {
+	display: none;
+}
+
+.pcal-folder-account {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 10px 8px 3px 4px;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	border-radius: 5px;
+	cursor: default;
+}
+
+.pcal-folder-account:hover {
+	color: var(--text-normal);
+}
+
+.pcal-folder-acctname {
+	flex: 1;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-folder-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px 3px 10px;
+	border-radius: 5px;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	cursor: default;
+}
+
+.pcal-folder-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-folder-row.is-selected {
+	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+	font-weight: var(--font-medium);
+}
+
+/* the collapse chevron; an empty twist keeps leaf rows aligned */
+.pcal-folder-twist {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 15px;
+	flex-shrink: 0;
+	color: var(--text-faint);
+}
+
+.pcal-folder-twist:hover {
+	color: var(--text-normal);
+}
+
+.pcal-folder-twist .svg-icon {
+	width: 12px;
+	height: 12px;
+}
+
+.pcal-folder-ic .svg-icon {
+	width: 13px;
+	height: 13px;
+	color: var(--text-faint);
+	vertical-align: -2px;
+}
+
+.pcal-folder-name {
+	flex: 1;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-folder-count {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-accent);
+	font-weight: var(--font-semibold);
+}
+
+.pcal-folder-unread .pcal-folder-name {
+	font-weight: var(--font-normal);
+}
+
+/* the source-folder tag in Unread Mail results */
+.pcal-mail-tag {
+	flex-shrink: 0;
+	max-width: 90px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 10px;
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 0 6px;
+	line-height: 15px;
+}
+
+.pcal-folder-empty {
+	padding: 2px 10px 6px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+/* the list column: its Outlook-style header rides the wrap, the rows scroll */
+.pcal-mail-listwrap {
+	width: 340px;
+	min-width: 240px;
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	border-right: 1px solid var(--background-modifier-border);
+}
+
+.pcal-mail-listhead {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 7px 8px 5px 10px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-mail-listtitle {
+	flex: 1;
+	min-width: 0;
+	font-weight: var(--font-semibold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-mail-listhead-btns {
+	display: flex;
+	gap: 1px;
+	flex-shrink: 0;
+}
+
+.pcal-mail-list {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 4px 0;
+}
+
+.pcal-mail-error {
+	color: var(--color-red);
+	font-size: var(--font-ui-smaller);
+	padding: 4px 12px;
+}
+
+.pcal-mail-row {
+	display: flex;
+	gap: 8px;
+	padding: 7px 12px 7px 10px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	cursor: default;
+}
+
+.pcal-mail-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-mail-row.is-selected {
+	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+}
+
+.pcal-mail-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	margin-top: 5px;
+	flex-shrink: 0;
+}
+
+.pcal-mail-mid {
+	min-width: 0;
+	flex: 1;
+}
+
+.pcal-mail-top {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.pcal-mail-from {
+	flex: 1;
+	min-width: 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-mail-row.is-unread .pcal-mail-from,
+.pcal-mail-row.is-unread .pcal-mail-subject {
+	font-weight: var(--font-semibold);
+}
+
+.pcal-mail-time {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	white-space: nowrap;
+}
+
+.pcal-mail-subject {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+}
+
+.pcal-mail-clip .svg-icon {
+	width: 11px;
+	height: 11px;
+	color: var(--text-faint);
+	vertical-align: -1px;
+}
+
+.pcal-mail-preview {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* quick actions on a message row: reply, read toggle, archive */
+/* the quick actions take the timestamp's spot on hover, Outlook's swap,
+   instead of reserving a blank column of their own */
+.pcal-mail-actions {
+	display: none;
+	position: absolute;
+	top: 5px;
+	right: 8px;
+	align-items: center;
+	gap: 2px;
+	z-index: 2;
+}
+
+.pcal-mail-row:hover .pcal-mail-actions,
+.pcal-mail-row.is-selected .pcal-mail-actions {
+	display: flex;
+}
+
+.pcal-mail-row:hover .pcal-mail-time,
+.pcal-mail-row.is-selected .pcal-mail-time {
+	visibility: hidden;
+}
+
+@media (hover: none) {
+	.pcal-mail-actions {
+		display: flex;
+		position: static;
+	}
+
+	.pcal-mail-row .pcal-mail-time {
+		visibility: visible;
+	}
+}
+
+.pcal-mail-row button.pcal-mail-act,
+.pcal-mail-row button.pcal-mail-act:hover {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 3px 4px;
+	height: auto;
+	color: var(--text-faint);
+	cursor: default;
+}
+
+.pcal-mail-row button.pcal-mail-act:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+	border-radius: 4px;
+}
+
+.pcal-mail-act .svg-icon {
+	width: 14px;
+	height: 14px;
+}
+
+.pcal-mail-read {
+	flex: 1;
+	min-width: 0;
+	overflow-y: auto;
+	padding: 14px 18px;
+	user-select: text;
+}
+
+.pcal-mail-read-subject {
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-large);
+	color: var(--text-normal);
+}
+
+.pcal-mail-read-meta {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-top: 2px;
+}
+
+.pcal-mail-read-body {
+	margin-top: 12px;
+	color: var(--text-normal);
+	font-size: var(--font-ui-medium);
+	line-height: 1.5;
+	white-space: pre-wrap;
+}
+
+.pcal-mail-replywrap {
+	margin-top: 10px;
+}
+
+.pcal-mail-replybox {
+	width: 100%;
+	resize: vertical;
+}
+
+/* Narrow layouts drill one full-height screen at a time, like the phone Mail
+   app: Mailboxes, then a list, then the message, with back in the header. */
+.pcal-mail-drill .pcal-mail-folders,
+.pcal-mail-drill .pcal-mail-list,
+.pcal-mail-drill .pcal-mail-read {
+	display: none;
+	width: 100%;
+	min-width: 0;
+	flex: 1;
+	min-height: 0;
+	border-right: none;
+}
+
+.pcal-mail-drill.pcal-screen-folders .pcal-mail-folders {
+	display: block;
+}
+
+.pcal-mail-drill .pcal-mail-listwrap {
+	display: none;
+}
+
+.pcal-mail-drill.pcal-screen-list .pcal-mail-listwrap {
+	display: flex;
+	width: 100%;
+}
+
+.pcal-mail-drill.pcal-screen-list .pcal-mail-list {
+	display: block;
+}
+
+.pcal-mail-drill.pcal-screen-read .pcal-mail-read {
+	display: block;
+}
+
+/* finger-sized rows while drilling */
+.pcal-mail-drill .pcal-folder-row {
+	padding-top: 8px;
+	padding-bottom: 8px;
+	font-size: var(--font-ui-medium);
+}
+
+.pcal-mail-drill .pcal-mail-row {
+	padding-top: 10px;
+	padding-bottom: 10px;
+}
+
+/* ---------------- attendee availability ---------------- */
+
+.pcal-avail {
+	margin: 2px 0 6px;
+}
+
+.pcal-avail-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 0;
+}
+
+.pcal-avail-name {
+	width: 90px;
+	flex-shrink: 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-avail-track {
+	position: relative;
+	flex: 1;
+	height: 16px;
+	border-radius: 4px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	overflow: hidden;
+}
+
+.pcal-avail-track.is-unknown {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 10px;
+	color: var(--text-faint);
+}
+
+.pcal-avail-block {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+}
+
+.pcal-avail-block.is-busy {
+	background: hsla(var(--interactive-accent-hsl), 0.55);
+}
+
+.pcal-avail-block.is-tentative {
+	background: repeating-linear-gradient(45deg, hsla(var(--interactive-accent-hsl), 0.45) 0 4px, transparent 4px 8px);
+}
+
+.pcal-avail-block.is-oof {
+	background: rgba(var(--color-purple-rgb), 0.55);
+}
+
+.pcal-avail-slot {
+	position: absolute;
+	top: -1px;
+	bottom: -1px;
+	border: 2px solid var(--color-red);
+	border-radius: 3px;
+	pointer-events: none;
+}
+
+.pcal-avail-verdict {
+	width: 58px;
+	flex-shrink: 0;
+	text-align: right;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.pcal-avail-verdict.is-ok {
+	color: var(--color-green);
+}
+
+.pcal-avail-verdict.is-soft {
+	color: var(--color-yellow);
+}
+
+.pcal-avail-verdict.is-bad {
+	color: var(--color-red);
+}
+
+.pcal-avail-summary {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	padding-top: 4px;
+}
+
+/* ---------------- week numbers, reminders ---------------- */
+
+.pcal-weeknum {
+	position: absolute;
+	left: 3px;
+	bottom: 2px;
+	z-index: 1;
+	font-size: 9px;
+	color: var(--text-faint);
+	pointer-events: none;
+}
+
+.pcal-gutter-spacer.pcal-weeknum-head {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 10px;
+	color: var(--text-faint);
+}
+
+/* ---------------- meeting reminder ----------------
+   Obsidian's notice is a black slab meant for "something went wrong", and a
+   meeting reminder is not bad news. This is a card in the vault's own colors:
+   an accent rail down the side to say which plugin is talking, the meeting on
+   one line, the three facts about it on the next, and the join on its own row
+   where a button belongs. */
+
+.notice.pcal-remind-notice {
+	padding: 0;
+	background: transparent;
+	box-shadow: none;
+	border: 0;
+	/* the notice's own text color would win over every child otherwise */
+	color: var(--text-normal);
+	max-width: min(360px, 92vw);
+}
+
+.pcal-remind {
+	position: relative;
+	padding: 12px 14px 12px 16px;
+	border-radius: 12px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+	overflow: hidden;
+	animation: pcal-remind-in 180ms ease-out;
+}
+
+/* the rail is a pseudo-element so it cannot be pushed around by content */
+.pcal-remind::before {
+	content: "";
+	position: absolute;
+	inset: 0 auto 0 0;
+	width: 3px;
+	background: var(--interactive-accent);
+}
+
+@keyframes pcal-remind-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.pcal-remind {
+		animation: none;
+	}
+}
+
+.pcal-remind-head {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+}
+
+.pcal-remind-icon {
+	display: flex;
+	color: var(--interactive-accent);
+	flex: 0 0 auto;
+	margin-top: 1px;
+}
+
+.pcal-remind-icon .svg-icon {
+	width: 16px;
+	height: 16px;
+}
+
+/* a long meeting title wraps twice and then stops, so the card cannot grow
+   tall enough to push its own Join button off a small screen */
+.pcal-remind-title {
+	font-weight: var(--font-semibold);
+	line-height: 1.3;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+}
+
+.pcal-remind-sub {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: 7px 0 0 24px;
+}
+
+/* how long have I got is the one thing being read in a hurry, so it is the
+   one thing wearing color */
+.pcal-remind-when {
+	padding: 1px 7px;
+	border-radius: 999px;
+	font-weight: var(--font-semibold);
+	color: var(--text-on-accent);
+	background: var(--interactive-accent);
+}
+
+.pcal-remind-when.is-now {
+	background: var(--color-red);
+}
+
+.pcal-remind-where {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 180px;
+}
+
+/* separators between the plain facts, but never before the first one */
+.pcal-remind-at + .pcal-remind-where::before {
+	content: "·";
+	margin-right: 6px;
+	color: var(--text-faint);
+}
+
+.pcal-remind-btns {
+	display: flex;
+	gap: 8px;
+	margin: 12px 0 0 24px;
+}
+
+.pcal-remind-btns button {
+	font-size: var(--font-ui-small);
+}
+
+.pcal-remind-later {
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+}
+
+.pcal-remind-later:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* ---------------- mini month navigator ---------------- */
+
+.pcal-mini {
+	position: fixed;
+	z-index: var(--layer-menu);
+	width: 264px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	box-shadow: var(--shadow-l, var(--shadow-s));
+	padding: 10px;
+	user-select: none;
+}
+
+.pcal-mini-head {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-bottom: 8px;
+}
+
+.pcal-mini-title {
+	flex: 1;
+	text-align: center;
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
+
+.pcal-mini button.pcal-icon-btn {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 2px 6px;
+	height: auto;
+	color: var(--text-muted);
+	cursor: default;
+}
+
+.pcal-mini button.pcal-icon-btn:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.pcal-mini-grid {
+	display: grid;
+	grid-template-columns: repeat(7, 1fr);
+	gap: 1px;
+}
+
+.pcal-mini-dow {
+	text-align: center;
+	font-size: 10px;
+	color: var(--text-faint);
+	padding-bottom: 3px;
+}
+
+.pcal-mini-day {
+	position: relative;
+	text-align: center;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	line-height: 26px;
+	border-radius: 6px;
+	cursor: default;
+}
+
+.pcal-mini-day:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-mini-day.is-other {
+	color: var(--text-faint);
+}
+
+.pcal-mini-day.is-today {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-weight: var(--font-semibold);
+}
+
+.pcal-mini-day.has-events::after {
+	content: "";
+	position: absolute;
+	left: 50%;
+	transform: translateX(-50%);
+	bottom: 1px;
+	width: 4px;
+	height: 3px;
+	border-radius: 2px;
+	background: var(--text-accent);
+}
+
+.pcal-mini-day.has-many::after {
+	width: 10px;
+}
+
+.pcal-mini-day.is-today.has-events::after {
+	background: var(--text-on-accent);
+}
+
+/* ---------------- the agenda block inside notes ---------------- */
+
+.pcal-embed {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 9px;
+	padding: 8px 12px 10px;
+	background: var(--background-secondary);
+	user-select: none;
+}
+
+.pcal-embed-title {
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	padding: 2px 2px 6px;
+}
+
+.pcal-embed-title:hover {
+	color: var(--text-accent);
+}
+
+.pcal-embed .pcal-agenda-head {
+	padding-top: 8px;
+}
+
+.pcal-embed-empty {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	padding: 2px 2px 4px;
+}
+
+/* ---------------- settings: search, tabs, help ---------------- */
+
+.pcal-settings-search {
+	margin: 4px 0 10px;
+}
+
+.pcal-settings-search-input {
+	width: 100%;
+}
+
+.pcal-settings-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px;
+	margin: 2px 0 18px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* the compound selector outranks Obsidian's own settings-area button chrome
+   (a .vertical-tab-content button rule) so the tabs render flat, not as boxes */
+.pcal-settings-tabs button.pcal-settings-tab,
+.pcal-settings-tabs button.pcal-settings-tab:hover,
+.pcal-settings-tabs button.pcal-settings-tab:focus,
+.pcal-settings-tabs button.pcal-settings-tab:focus-visible,
+.pcal-settings-tabs button.pcal-settings-tab:active {
+	background: transparent;
+	border: none;
+	border-radius: 0;
+	box-shadow: none;
+	outline: none;
+	margin: 0 0 -1px 0;
+	padding: 7px 14px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-medium);
+	border-bottom: 2px solid transparent;
+	cursor: default;
+	transition: color 120ms ease, border-color 120ms ease;
+}
+
+.pcal-settings-tabs button.pcal-settings-tab:hover {
+	color: var(--text-normal);
+	border-bottom-color: var(--background-modifier-border-hover);
+}
+
+.pcal-settings-tabs button.pcal-settings-tab.is-active {
+	color: var(--text-accent);
+	font-weight: var(--font-semibold);
+	border-bottom-color: var(--interactive-accent);
+}
+
+/* the first heading inside each tab does not need its big top border */
+.pcal-settings-section[data-first="1"] .setting-item-heading {
+	border-top: none;
+	padding-top: 0;
+}
+
+/* later sections in a tab start after a clear divider and breathing room */
+.pcal-settings-section:not([data-first="1"]) {
+	margin-top: 26px;
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 14px;
+}
+
+/* a section's opening paragraph, styled as quiet prose */
+.pcal-section-intro {
+	border-top: none;
+	padding-top: 0;
+}
+
+.pcal-section-intro .setting-item-info {
+	margin-right: 0;
+}
+
+/* indent per-calendar rows under their account */
+.pcal-subsetting {
+	padding-left: 24px;
+	border-top: none;
+}
+
+/* a small help icon after a setting name; opens the soft card below */
+.pcal-setting-help {
+	display: inline-flex;
+	margin-left: 6px;
+	vertical-align: -3px;
+	color: var(--text-faint);
+	cursor: help;
+}
+
+.pcal-setting-help:hover {
+	color: var(--text-muted);
+}
+
+.pcal-setting-help .svg-icon {
+	width: 14px;
+	height: 14px;
+}
+
+/* the help popover: a soft theme-colored card instead of the native black
+   tooltip; shows on hover, and a click pins it open */
+.pcal-help-pop {
+	position: fixed;
+	z-index: var(--layer-tooltip);
+	max-width: 340px;
+	padding: 8px 11px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	box-shadow: var(--shadow-s);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	line-height: 1.45;
+}
+
+.pcal-person-link {
+	text-decoration: none;
+	border-bottom: 1px dotted var(--text-faint);
+}
+
+.pcal-person-link:hover {
+	color: var(--text-accent);
+	border-bottom-color: var(--text-accent);
+}
+
+/* ---------------- narrow panes and phones ---------------- */
+
+body.is-phone .pcal-header button.pcal-icon-btn,
+body.is-phone .pcal-header button.pcal-today-btn {
+	padding: 7px 11px;
+}
+
+body.is-phone .pcal-modes button.pcal-mode-btn {
+	padding: 6px 10px;
+}
+
+body.is-phone .pcal-chip {
+	line-height: 26px;
+	font-size: var(--font-ui-small);
+}
+
+body.is-phone .pcal-span {
+	height: 24px;
+	line-height: 24px;
+}
+
+body.is-phone .pcal-agenda-row {
+	padding: 10px 4px;
+}
+
+body.is-phone .pcal-card {
+	width: calc(100vw - 16px);
+}
+
+body.is-phone .pcal-mini {
+	width: min(300px, calc(100vw - 16px));
+}
+
+body.is-phone .pcal-mini-day {
+	line-height: 34px;
+}
+
+@media (max-width: 600px) {
+	.pcal-title {
+		order: -1;
+		width: 100%;
+	}
+
+	.pcal-agenda-time {
+		width: 52px;
+	}
+}
+
+/* Two columns on a wide settings pane. The page was a single narrow ribbon of
+   rows down the middle of a very wide modal, so short rows (a toggle, a
+   dropdown, a button) now sit two-up and the page loses roughly a quarter of
+   its height. Anything with a text field, a text area, or a slider keeps the
+   full width: those controls need the room, and squeezing a folder path or a
+   URL into half a column trades scrolling for squinting.
+
+   Account rows and their indented sub-settings also stay full width. They are
+   a parent and its children, and splitting a child into the opposite column
+   from the account it belongs to would break the one relationship the
+   indentation exists to show.
+
+   auto-fit collapses back to one column on a narrow window or a phone with no
+   media query, and `dense` lets a short row backfill the gap beside a
+   full-width one instead of stranding it. */
+.pcal-settings-section {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	grid-auto-flow: row dense;
+	column-gap: 26px;
+	align-items: start;
+}
+.pcal-settings-section > .setting-item-heading,
+.pcal-settings-section > .pcal-section-intro,
+.pcal-settings-section > .pcal-account-head,
+.pcal-settings-section > .pcal-subsetting,
+.pcal-settings-section > .setting-item:has(input[type="text"]),
+.pcal-settings-section > .setting-item:has(input[type="password"]),
+.pcal-settings-section > .setting-item:has(input[type="search"]),
+.pcal-settings-section > .setting-item:has(input[type="number"]),
+.pcal-settings-section > .setting-item:has(textarea),
+.pcal-settings-section > .setting-item:has(.slider),
+.pcal-settings-section > .setting-item:has(select),
+.pcal-settings-section > .setting-item:has(input[type="range"]) {
+	grid-column: 1 / -1;
+}
+
+/* ---------------- notices in a light theme ----------------
+   Obsidian paints every notice as a near-black slab. In a dark theme that is
+   just the UI; in a light one it reads as an error box, whatever it says, and
+   a progress count or a to-do total is not an error. Same shape and position,
+   the theme's own surface colors. A notice carrying .pw-self-styled brings its
+   own card (Power Desk's meeting reminder) and is left alone. */
+
+body.theme-light .notice:not(.pw-self-styled) {
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: 0 6px 22px rgba(0, 0, 0, 0.14);
+}
+
+body.theme-light .notice:not(.pw-self-styled) a {
+	color: var(--text-accent);
+}

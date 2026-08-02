@@ -1,0 +1,23 @@
+{
+	"name": "powerdesk",
+	"version": "1.59.1",
+	"description": "Obsidian plugin: Microsoft 365, Google, CalDAV, and ICS calendars with a mail triage inbox",
+	"main": "main.js",
+	"type": "module",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"test": "esbuild src/tests.ts --bundle --format=cjs --outfile=tests.cjs && node tests.cjs",
+		"deploy": "npm run build && node deploy.mjs"
+	},
+	"dependencies": {
+		"ical.js": "^2.2.0"
+	},
+	"devDependencies": {
+		"@types/node": "^20.14.0",
+		"esbuild": "^0.21.5",
+		"obsidian": "latest",
+		"tslib": "^2.6.3",
+		"typescript": "^5.5.3"
+	}
+}
