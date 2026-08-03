@@ -16,6 +16,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # On a pull request, checkout defaults to the merge ref, whose tip is
+          # a commit GitHub makes and commits as itself. Checking that would
+          # fail every PR on a commit nobody wrote, which with this check
+          # required on main leaves no way to land anything at all. The head
+          # commit and its history are the ones actually being merged, and
+          # those are the ones worth checking.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Every commit must carry the brand identity
         run: |
