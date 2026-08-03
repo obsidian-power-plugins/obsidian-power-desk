@@ -1,4 +1,4 @@
-import { App, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice, Platform, Plugin, PluginSettingTab, Scope, Setting, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
+import { App, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
 import { chunk, GRAPH_BATCH_MAX,
 	DayCell,
 	EventDraft,
@@ -13322,6 +13322,20 @@ class IcsFeedModal extends Modal {
 
 /* ---------------- settings tab ---------------- */
 
+/** One row of the settings tab. `build` is handed a Setting whose name and
+ *  description are already set, so it only adds the controls and any richer
+ *  description content. Rows are data rather than drawing code so the two
+ *  renderers below cannot disagree about what the tab holds. */
+type Row = { name: string; desc?: string; help?: string; cls?: string; aliases?: string[]; build?: (st: Setting) => void | (() => void) };
+
+/** A run of rows under one heading. Each becomes a headed group on 1.13 and
+ *  one section div in the fallback. */
+type Group = { heading?: string; rows: Row[] };
+
+/** One tab: a native settings page on Obsidian 1.13 and up, a tab button in
+ *  the fallback renderer for older builds. */
+type Page = { id: string; label: string; groups: Group[] };
+
 class PCSettingTab extends PluginSettingTab {
 	private activeTab = "microsoft";
 	private query = "";
@@ -13333,16 +13347,32 @@ class PCSettingTab extends PluginSettingTab {
 	private helpAnchor: HTMLElement | null = null;
 	private helpPinned = false;
 	private helpCleanup: (() => void) | null = null;
+	/** The containers the five source lists draw into. Each list is one row
+	 *  owning a container of its own rather than a row per account, for two
+	 *  reasons: expanding an account redraws just that list instead of the whole
+	 *  tab, which keeps your place on the page; and a list built into the
+	 *  definitions would go stale, because reopening a tab renders the cached
+	 *  definitions without asking for them again, so an account that arrived
+	 *  while settings were closed would be missing. */
+	private graphHost: HTMLElement | null = null;
+	private googleHost: HTMLElement | null = null;
+	private caldavHost: HTMLElement | null = null;
+	private icsHost: HTMLElement | null = null;
+	private vaultHost: HTMLElement | null = null;
 
 	constructor(
 		app: App,
 		private plugin: PowerDeskPlugin
 	) {
 		super(app, plugin);
+		// Armed once, for the life of the tab. It used to be set in display() and
+		// cleared in hide(), which the declarative renderer would leave null after
+		// the first close, since it never calls display() again. refresh() bails
+		// when the tab is off screen, so a closed tab still costs nothing.
+		plugin.refreshSettingsTab = () => this.refresh();
 	}
 
 	hide() {
-		this.plugin.refreshSettingsTab = null;
 		this.closeHelp();
 	}
 
@@ -13390,25 +13420,147 @@ class PCSettingTab extends PluginSettingTab {
 		};
 	}
 
+	/** Redraw when the rows themselves change: an account signed in, the shared
+	 *  app set, the read-delay slider appearing. Obsidian 1.13 rebuilds the tab
+	 *  from getSettingDefinitions(); older builds have only the fallback
+	 *  renderer.
+	 *
+	 *  The plugin calls this whenever an account changes underneath us, so it
+	 *  bails when the tab is off screen rather than rebuilding a hidden
+	 *  container. */
+	refresh() {
+		if (!this.containerEl.isShown()) return;
+		this.closeHelp(); // whatever the popover is anchored to is about to go
+		// update() arrived with the declarative API in 1.13 and minAppVersion is
+		// still 1.8.7, so it is reached through a cast rather than named outright:
+		// an older build has no definitions to rebuild from and redraws instead.
+		const tab = this as unknown as { update?: () => void };
+		if (tab.update) tab.update();
+		else this.renderFallback();
+	}
+
+	/** A small help icon after the setting name carrying the deeper "what does
+	 *  this actually do" explanation; hover shows it, a click pins it open. No
+	 *  aria-label on the icon or Obsidian's native black tooltip doubles up. */
+	private addHelp(st: Setting, text: string) {
+		const ic = st.nameEl.createSpan({ cls: "pcal-setting-help" });
+		setIcon(ic, "help-circle");
+		ic.addEventListener("mouseenter", () => this.openHelp(ic, text, false));
+		ic.addEventListener("mouseleave", () => {
+			if (!this.helpPinned && this.helpAnchor === ic) this.closeHelp();
+		});
+		ic.addEventListener("click", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			if (this.helpPinned && this.helpAnchor === ic) this.closeHelp();
+			else this.openHelp(ic, text, true);
+		});
+	}
+
+	/** Obsidian 1.13 and up builds the tab from these and never calls display():
+	 *  one native page per tab, standing in for the tab bar the fallback draws
+	 *  for older builds. A tab holding more than one section becomes a page of
+	 *  headed groups, which is what the headings were doing by hand.
+	 *
+	 *  Every row renders itself rather than declaring a `control`. A declarative
+	 *  control writes through Obsidian's generic setControlValue, which would
+	 *  bypass queueSave and the settings merge behind it. */
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		const pages = this.buildPages();
+		const rowsOf = new Map(pages.map((p) => [p.label, p.groups.flatMap((g) => g.rows)] as const));
+		return [
+			{
+				name: "",
+				searchable: false, // it is a masthead, not a setting
+				render: (st) => {
+					st.settingEl.empty();
+					this.renderAbout(st.settingEl);
+				},
+			},
+			{
+				type: "group",
+				search: {
+					placeholder: "Search settings...",
+					// the entries here are whole tabs, so a tab stays up when anything
+					// inside it matches. Obsidian's own search box, top left, reaches
+					// the individual settings.
+					match: (def, query) => {
+						const q = query.trim().toLowerCase();
+						if (!q) return true;
+						const has = (v: string | undefined) => (v ?? "").toLowerCase().includes(q);
+						return (rowsOf.get(def.name) ?? []).some(
+							(r) => has(r.name) || has(r.desc) || (r.aliases ?? []).some(has)
+						);
+					},
+				},
+				items: pages.map(
+					(p): SettingDefinitionPage => ({
+						type: "page",
+						name: p.label,
+						// a tab with one section needs no heading inside it: the page is
+						// already named after it. The heading is kept on the group anyway,
+						// because the fallback draws every section headed.
+						items:
+							p.groups.length === 1
+								? p.groups[0].rows.map((r) => this.toDefinition(r, p.label))
+								: p.groups.map((g) => ({
+										type: "group" as const,
+										heading: g.heading,
+										items: g.rows.map((r) => this.toDefinition(r, p.label)),
+									})),
+					})
+				),
+			},
+		];
+	}
+
+	/** One row as a definition Obsidian can draw. The name and description are
+	 *  its to render and it rebuilds both on a redraw, so a row only hands back
+	 *  what it hung on the row element itself. */
+	private toDefinition(r: Row, page: string): SettingDefinitionRender {
+		return {
+			name: r.name,
+			desc: r.desc,
+			// searching the tab name still finds its rows, the way a heading match
+			// opened the whole section in the tab bar
+			aliases: [...(r.aliases ?? []), page],
+			render: (st) => {
+				if (r.cls) st.settingEl.addClass(r.cls);
+				const teardown = r.build?.(st);
+				if (r.help) this.addHelp(st, r.help);
+				return teardown;
+			},
+		};
+	}
+
+	/** What this plugin is and which build is running, above the tabs. Read off
+	 *  the manifest so it cannot drift from the released version. */
+	private renderAbout(el: HTMLElement) {
+		el.addClass("pcal-about");
+		const head = el.createDiv({ cls: "pcal-about-head" });
+		head.createSpan({ cls: "pcal-about-name", text: this.plugin.manifest.name });
+		head.createSpan({ cls: "pcal-about-version", text: "v" + this.plugin.manifest.version });
+		el.createDiv({ cls: "pcal-about-desc", text: this.plugin.manifest.description });
+	}
+
+	/** The pre-1.13 renderer: every section on one page, with a tab bar and a
+	 *  search box of our own because there was no declarative API to hand the
+	 *  work to. Obsidian 1.13 and up ignores this and renders the definitions
+	 *  above instead, so the two only ever differ in how they draw, never in
+	 *  what they draw. */
 	display() {
+		this.renderFallback();
+	}
+
+	private renderFallback() {
 		const root = this.containerEl;
 		root.empty();
 		this.closeHelp(); // a re-render orphans any popover anchored to the old DOM
-		const s = this.plugin.settings;
-		const save = () => this.plugin.queueSave();
-		this.plugin.refreshSettingsTab = () => this.display();
 
-		const TABS: { id: string; label: string }[] = [
-			{ id: "microsoft", label: "Microsoft 365" },
-			{ id: "google", label: "Google" },
-			{ id: "caldav", label: "CalDAV" },
-			{ id: "ics", label: "ICS feeds" },
-			{ id: "vault", label: "Vault notes" },
-			{ id: "calendar", label: "Calendar" },
-			{ id: "mail", label: "Mail" },
-			{ id: "notes", label: "Notes" },
-		];
-		if (!TABS.some((t) => t.id === this.activeTab)) this.activeTab = TABS[0].id;
+		const pages = this.buildPages();
+		if (!pages.some((p) => p.id === this.activeTab)) this.activeTab = pages[0].id;
+
+		this.renderAbout(root.createDiv({ cls: "pcal-about-standalone" }));
 
 		const searchWrap = root.createDiv({ cls: "pcal-settings-search" });
 		const searchInput = searchWrap.createEl("input", { cls: "pcal-settings-search-input" });
@@ -13419,52 +13571,99 @@ class PCSettingTab extends PluginSettingTab {
 		const tabBar = root.createDiv({ cls: "pcal-settings-tabs" });
 		const body = root.createDiv({ cls: "pcal-settings-body" });
 
-		// each heading opens a section div tagged with its tab; the settings that
-		// follow render into it because c points at the current section.
-		// Add new settings through section(), never a bare setHeading(), or they
-		// escape the tabs.
-		let c: HTMLElement = body;
-		const section = (name: string, tab: string) => {
-			const first = !body.querySelector(`.pcal-settings-section[data-tab="${tab}"]`);
-			c = body.createDiv({ cls: "pcal-settings-section" });
-			c.dataset.tab = tab;
-			c.dataset.name = name.toLowerCase();
-			if (first) c.dataset.first = "1";
-			return new Setting(c).setName(name).setHeading();
+		// one section div per group, tagged with its tab so the tab bar and the
+		// search box below can show and hide whole sections at a time
+		for (const p of pages) {
+			for (const [i, g] of p.groups.entries()) {
+				const sec = body.createDiv({ cls: "pcal-settings-section" });
+				sec.dataset.tab = p.id;
+				sec.dataset.name = (g.heading ?? p.label).toLowerCase();
+				if (i === 0) sec.dataset.first = "1"; // the tab's first heading skips its top border
+				if (g.heading) new Setting(sec).setName(g.heading).setHeading();
+				for (const r of g.rows) this.drawRow(sec, r);
+			}
+		}
+
+		const setVisible = (el: HTMLElement, v: boolean) => (el.style.display = v ? "" : "none");
+		const applyView = () => {
+			const q = this.query.trim().toLowerCase();
+			setVisible(tabBar, !q);
+			for (const sec of Array.from(body.children) as HTMLElement[]) {
+				const items = Array.from(sec.querySelectorAll(":scope > .setting-item:not(.setting-item-heading)")) as HTMLElement[];
+				if (!q) {
+					for (const it of items) setVisible(it, true);
+					setVisible(sec, sec.dataset.tab === this.activeTab);
+					continue;
+				}
+				// a heading-name match reveals the whole section; otherwise match each row
+				const nameHit = (sec.dataset.name ?? "").includes(q);
+				let anyHit = false;
+				for (const it of items) {
+					const name = it.querySelector(".setting-item-name")?.textContent?.toLowerCase() ?? "";
+					const desc = it.querySelector(".setting-item-description")?.textContent?.toLowerCase() ?? "";
+					const hit = nameHit || name.includes(q) || desc.includes(q) || (it.dataset.pcalAlias ?? "").includes(q);
+					setVisible(it, hit);
+					if (hit) anyHit = true;
+				}
+				setVisible(sec, anyHit);
+			}
 		};
 
-		// A section's opening paragraph, built as a real Setting rather than a bare
-		// <p>: the theme cards every .setting-item, so loose text floats outside
-		// the boxes and breaks the column the rest of the rows line up on.
-		const intro = (text: string) => new Setting(c).setDesc(text).setClass("pcal-section-intro");
+		for (const p of pages) {
+			const btn = tabBar.createEl("button", { text: p.label, cls: "pcal-settings-tab" });
+			btn.toggleClass("is-active", p.id === this.activeTab);
+			btn.onclick = () => {
+				if (this.activeTab === p.id) return;
+				this.activeTab = p.id;
+				for (const other of Array.from(tabBar.children) as HTMLElement[]) other.toggleClass("is-active", other === btn);
+				applyView();
+			};
+		}
 
-		// a small help icon after the setting name carrying the deeper "what does
-		// this actually do" explanation; hover shows it, a click pins it open. No
-		// aria-label on the icon or Obsidian's native black tooltip doubles up.
-		const help = (st: Setting, text: string) => {
-			const ic = st.nameEl.createSpan({ cls: "pcal-setting-help" });
-			setIcon(ic, "help-circle");
-			ic.addEventListener("mouseenter", () => this.openHelp(ic, text, false));
-			ic.addEventListener("mouseleave", () => {
-				if (!this.helpPinned && this.helpAnchor === ic) this.closeHelp();
-			});
-			ic.addEventListener("click", (e) => {
-				e.preventDefault();
-				e.stopPropagation();
-				if (this.helpPinned && this.helpAnchor === ic) this.closeHelp();
-				else this.openHelp(ic, text, true);
-			});
+		searchInput.addEventListener("input", () => {
+			this.query = searchInput.value;
+			applyView();
+		});
+
+		applyView();
+	}
+
+	/** One row into a container, in the order Obsidian applies a definition:
+	 *  name and description first, then the row's own content, so a row that
+	 *  appends to either element lands in the same place under both renderers. */
+	private drawRow(into: HTMLElement, r: Row) {
+		const st = new Setting(into).setName(r.name);
+		if (r.desc) st.setDesc(r.desc);
+		if (r.cls) st.settingEl.addClass(r.cls);
+		if (r.aliases?.length) st.settingEl.dataset.pcalAlias = r.aliases.join(" ").toLowerCase();
+		r.build?.(st);
+		if (r.help) this.addHelp(st, r.help);
+	}
+
+	/** A row that owns a container instead of a control: the source lists draw
+	 *  themselves into it and redraw in place, so adding or expanding an account
+	 *  never rebuilds the tab. */
+	private listRow(name: string, aliases: string[], take: (host: HTMLElement | null) => void, draw: () => void): Row {
+		return {
+			name: "",
+			aliases: [name, ...aliases],
+			build: (st) => {
+				st.settingEl.empty();
+				st.settingEl.addClass("pcal-list-host");
+				take(st.settingEl.createDiv({ cls: "pcal-list" }));
+				draw();
+				return () => take(null);
+			},
 		};
+	}
 
-		/* ---------------- Sources ---------------- */
-
-		section("Microsoft 365 accounts", "microsoft");
-		intro("Work or personal Microsoft accounts, signed in with a device code in your browser; the plugin never sees a password. Each account expands to its calendars, and a friendly name tells work and personal apart at a glance.");
-		new Setting(c)
-			.setName("Add a Microsoft 365 account")
-			.then((st) => help(st, "Starts the sign-in wizard. You sign in on Microsoft's own page in your browser and paste back a short code, so no password ever reaches the plugin. A work account usually rides a shared app registration; a personal one gets its own. Each account you add brings its calendars along and can be renamed afterwards."))
-			.setDesc("Work or personal; a short wizard picks the right app registration and signs it in.")
-			.addButton((b) => b.setButtonText("Add account").setCta().onClick(() => new GraphAccountWizard(this.app, this.plugin).open()));
+	/** The Microsoft accounts, each expanding to its name, inbox, and calendars. */
+	private drawGraphAccounts() {
+		const host = this.graphHost;
+		if (!host) return;
+		host.empty();
+		const s = this.plugin.settings;
+		const save = () => this.plugin.queueSave();
 		for (const a of s.graphAccounts) {
 			const missing: string[] = [];
 			if (a.refresh && !this.plugin.canWriteAccount(a)) missing.push("editing");
@@ -13475,7 +13674,7 @@ class PCSettingTab extends PluginSettingTab {
 			if (a.refresh && this.plugin.canMailAccount(a) && !a.grantedScope.includes("Contacts")) missing.push("saved contacts");
 			if (a.refresh && this.plugin.canMailAccount(a) && !a.grantedScope.includes("Tasks")) missing.push("tasks");
 			const open = this.expandedAccounts.has(a.id);
-			const row = new Setting(c)
+			const row = new Setting(host)
 				.setName(this.plugin.nameOf(a))
 				.setDesc((a.nickname?.trim() ? a.label + " · " : "") + "Microsoft 365" + (a.clientId.trim() && a.clientId.trim() !== this.plugin.effectiveClientId() ? " · own app" : "") + (!a.refresh ? " · signed out" : missing.length ? ` · reconnect to enable ${missing.join(" and ")}` : ""))
 				.setClass("pcal-account-head");
@@ -13483,7 +13682,7 @@ class PCSettingTab extends PluginSettingTab {
 				b.setIcon(open ? "chevron-down" : "chevron-right").setTooltip(open ? "Hide details" : "Rename, inbox, calendars").onClick(() => {
 					if (open) this.expandedAccounts.delete(a.id);
 					else this.expandedAccounts.add(a.id);
-					this.display();
+					this.drawGraphAccounts();
 				})
 			);
 			// any missing power offers the reconnect, not just missing write access
@@ -13493,15 +13692,14 @@ class PCSettingTab extends PluginSettingTab {
 					b.setButtonText("Refresh calendars").onClick(() => {
 						void this.plugin.syncGraphCalendars(a).then(() => {
 							this.plugin.sourcesChanged();
-							this.display();
+							this.drawGraphAccounts();
 						});
 					})
 				);
 			row.addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => this.plugin.removeGraphAccount(a)));
 			if (!open) continue;
-			new Setting(c)
+			const nameSt = new Setting(host)
 				.setName("Name")
-			.then((st) => help(st, "What this account is called throughout the plugin: in the calendar's source list, on mail, and in the account picker. Handy when two accounts share a provider (work and personal Microsoft) and the addresses are the only thing telling them apart. Leaving it empty falls back to the address itself."))
 				.setDesc("A friendly name shown wherever this account appears; empty keeps the address.")
 				.setClass("pcal-subsetting")
 				.addText((t) => {
@@ -13512,13 +13710,13 @@ class PCSettingTab extends PluginSettingTab {
 					t.inputEl.addEventListener("blur", () => {
 						this.plugin.sourcesChanged();
 						this.plugin.mailChanged();
-						this.display();
+						this.drawGraphAccounts();
 					});
 				});
+			this.addHelp(nameSt, "What this account is called throughout the plugin: in the calendar's source list, on mail, and in the account picker. Handy when two accounts share a provider (work and personal Microsoft) and the addresses are the only thing telling them apart. Leaving it empty falls back to the address itself.");
 			if (this.plugin.canMailAccount(a)) {
-				new Setting(c)
+				const mailSt = new Setting(host)
 					.setName("Inbox in the Mail view")
-			.then((st) => help(st, "Whether this account's inbox appears in the Mail view. Turning it off leaves the account's calendars syncing normally and simply stops its mail from showing, which is what you want for an account you read elsewhere."))
 					.setClass("pcal-subsetting")
 					.addToggle((t) =>
 						t.setValue(a.mail !== false).onChange((v) => {
@@ -13527,9 +13725,10 @@ class PCSettingTab extends PluginSettingTab {
 							this.plugin.mailChanged();
 						})
 					);
+				this.addHelp(mailSt, "Whether this account's inbox appears in the Mail view. Turning it off leaves the account's calendars syncing normally and simply stops its mail from showing, which is what you want for an account you read elsewhere.");
 			}
 			for (const cal of a.calendars) {
-				new Setting(c)
+				new Setting(host)
 					.setName(cal.name + (cal.isDefault ? " (default)" : ""))
 					.setClass("pcal-subsetting")
 					.addColorPicker((p) =>
@@ -13548,89 +13747,18 @@ class PCSettingTab extends PluginSettingTab {
 					);
 			}
 		}
+	}
 
-		section("Microsoft 365 app", "microsoft");
-		intro("The shared app registration new work sign-ins ride, borrowed from Power Assistant when present. Add account handles all of this on its own; this section is for inspecting or swapping the shared app. Already-connected accounts keep the app they signed in with.");
-		const graphAppReady = !!this.plugin.effectiveClientId();
-		const createSt = new Setting(c)
-			.setName("Create the app registration")
-			.setDesc(
-				graphAppReady
-					? this.plugin.usingSiblingApp()
-						? "Power Assistant's app registration is borrowed automatically; nothing to do here."
-						: "A shared app is set; new sign-ins use it."
-					: "The Add account wizard creates this inline; these steps set the shared app from here instead."
-			);
-		help(
-			createSt,
-			"The registration is a one-time entry in Microsoft's systems that sign-ins name, so consent screens can say who is asking. The guide covers the registration fields, the one switch device-code sign-in needs, and where the Application (client) ID lives: paste that ID below when you have it. When Power Assistant is installed and already set up, its app is borrowed automatically and none of this is needed."
-		);
-		createSt.addButton((b) => {
-			b.setButtonText("Show the steps").onClick(() =>
-				new AzureAppGuideModal(this.app, (id) => {
-					s.graphClientId = id;
-					save();
-					this.display();
-				}).open()
-			);
-			if (!graphAppReady) b.setCta();
-		});
-		const sharedSt = new Setting(c)
-			.setName("Shared app")
-			.then((st) => help(st, "The Azure app registration that new work sign-ins use. Power Assistant's is borrowed automatically when that plugin is present, so there is usually nothing to set. Accounts already connected keep whichever app they signed in with, so swapping this only affects the next sign-in."))
-			.setDesc(
-				this.plugin.usingSiblingApp()
-					? "Power Assistant's app registration, borrowed automatically."
-					: s.graphClientId.trim()
-						? s.graphClientId.trim() + (s.graphTenant.trim() ? " · tenant " + s.graphTenant.trim() : "")
-						: "None yet; the wizard sets it on the first work sign-in."
-			);
-		sharedSt.addExtraButton((b) =>
-			b.setIcon("pencil").setTooltip(this.showGraphAppFields ? "Hide the fields" : "Edit the ID and tenant").onClick(() => {
-				this.showGraphAppFields = !this.showGraphAppFields;
-				this.display();
-			})
-		);
-		if (this.showGraphAppFields) {
-			const cid = new Setting(c)
-				.setName("Application (client) ID")
-				.setClass("pcal-subsetting")
-				.setDesc(this.plugin.usingSiblingApp() ? "Using Power Assistant's app registration. Enter an ID here to use a different one." : "From your Azure app registration's Overview page.")
-				.addText((t) => {
-					t.setPlaceholder(this.plugin.usingSiblingApp() ? this.plugin.effectiveClientId() : "00000000-0000-...").setValue(s.graphClientId).onChange((v) => {
-						s.graphClientId = v;
-						save();
-					});
-					t.inputEl.addEventListener("blur", () => this.display());
-				});
-			help(
-				cid,
-				"From the Overview page of an app created with 'Show the steps' above (any registration with public client flows on works). When Power Assistant is installed and already set up, its app is borrowed automatically and this field can stay empty. Already-connected accounts keep the app they signed in with; this field only steers new sign-ins."
-			);
-			new Setting(c)
-				.setName("Tenant")
-			.then((st) => help(st, "Which Microsoft directory the sign-in goes through. 'common' suits personal accounts and most work ones; an organization whose app registration is single-tenant needs its Directory (tenant) ID instead, which an administrator can supply. Getting this wrong shows up as a sign-in that refuses the account rather than anything subtler."))
-				.setClass("pcal-subsetting")
-				.setDesc("'common' works for most accounts; single-organization apps need their Directory (tenant) ID.")
-				.addText((t) => {
-					t.setPlaceholder(this.plugin.usingSiblingApp() && this.plugin.effectiveTenant() !== "common" ? this.plugin.effectiveTenant() : "common").setValue(s.graphTenant).onChange((v) => {
-						s.graphTenant = v;
-						save();
-					});
-					t.inputEl.addEventListener("blur", () => this.display());
-				});
-		}
-
-		section("Google accounts", "google");
-		intro("Google accounts, signed in through your browser. Each account expands to its calendars, and a friendly name tells accounts apart at a glance.");
-		new Setting(c)
-			.setName("Add a Google account")
-			.then((st) => help(st, "Starts Google's sign-in in your browser. Google requires your own OAuth client (the id and secret above) because installed apps cannot ship a shared one; once that is filled in, adding accounts is a click each."))
-			.setDesc(this.plugin.googleReady() ? "Signs in through your browser. Desktop only; the connection syncs." : "Needs your Google Cloud client ID and secret first (Google app, below).")
-			.addButton((b) => b.setButtonText("Add account").setCta().onClick(() => void this.plugin.connectGoogle()));
+	/** The Google accounts, each expanding to its name and calendars. */
+	private drawGoogleAccounts() {
+		const host = this.googleHost;
+		if (!host) return;
+		host.empty();
+		const s = this.plugin.settings;
+		const save = () => this.plugin.queueSave();
 		for (const g of s.googleAccounts) {
 			const open = this.expandedAccounts.has(g.id);
-			const row = new Setting(c)
+			const row = new Setting(host)
 				.setName(this.plugin.nameOf(g))
 				.setDesc((g.nickname?.trim() ? g.label + " · " : "") + "Google" + (g.refresh ? "" : " · signed out"))
 				.setClass("pcal-account-head");
@@ -13638,7 +13766,7 @@ class PCSettingTab extends PluginSettingTab {
 				b.setIcon(open ? "chevron-down" : "chevron-right").setTooltip(open ? "Hide details" : "Rename, calendars").onClick(() => {
 					if (open) this.expandedAccounts.delete(g.id);
 					else this.expandedAccounts.add(g.id);
-					this.display();
+					this.drawGoogleAccounts();
 				})
 			);
 			if (!g.refresh) row.addButton((b) => b.setButtonText("Reconnect").setCta().onClick(() => void this.plugin.connectGoogle(g)));
@@ -13647,15 +13775,14 @@ class PCSettingTab extends PluginSettingTab {
 					b.setButtonText("Refresh calendars").onClick(() => {
 						void this.plugin.syncGoogleCalendars(g).then(() => {
 							this.plugin.sourcesChanged();
-							this.display();
+							this.drawGoogleAccounts();
 						});
 					})
 				);
 			row.addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => this.plugin.removeGoogleAccount(g)));
 			if (!open) continue;
-			new Setting(c)
+			const nameSt = new Setting(host)
 				.setName("Name")
-			.then((st) => help(st, "What this Google account is called in the calendar's source list and the account picker. Empty keeps the address."))
 				.setDesc("A friendly name shown wherever this account appears; empty keeps the address.")
 				.setClass("pcal-subsetting")
 				.addText((t) => {
@@ -13665,11 +13792,12 @@ class PCSettingTab extends PluginSettingTab {
 					});
 					t.inputEl.addEventListener("blur", () => {
 						this.plugin.sourcesChanged();
-						this.display();
+						this.drawGoogleAccounts();
 					});
 				});
+			this.addHelp(nameSt, "What this Google account is called in the calendar's source list and the account picker. Empty keeps the address.");
 			for (const cal of g.calendars) {
-				new Setting(c)
+				new Setting(host)
 					.setName(cal.name + (cal.primary ? " (primary)" : "") + (cal.writable ? "" : " · read-only"))
 					.setClass("pcal-subsetting")
 					.addColorPicker((p) =>
@@ -13688,32 +13816,17 @@ class PCSettingTab extends PluginSettingTab {
 					);
 			}
 		}
+	}
 
-		section("Google app", "google");
-		intro("Google requires your own free Google Cloud project, since its terms forbid shipping shared credentials inside an open plugin. One time: create a project at console.cloud.google.com, enable the Google Calendar API, configure the OAuth consent screen as External and press Publish app, then create an OAuth client of type Desktop app and paste its ID and secret here. The README walks through every step.");
-		const gid = new Setting(c)
-			.setName("Client ID")
-			.addText((t) => t.setPlaceholder("....apps.googleusercontent.com").setValue(s.googleClientId).onChange((v) => {
-				s.googleClientId = v;
-				save();
-			}));
-		help(
-			gid,
-			"Press Publish app on the OAuth consent screen: a project left in Testing mode gets refresh tokens that expire every 7 days, which reads as being signed out weekly. Publishing an External app you never submit for verification just means a one-time 'unverified app' warning at sign-in."
-		);
-		new Setting(c).setName("Client secret")
-			.then((st) => help(st, "The secret half of your Google OAuth client, from the same credentials page as the client id. Google documents the installed-app secret as not confidential, which is why sharing it across your own devices is how they all sign in to the same app. Stored per device and sent only to Google.")).addText((t) => {
-			t.inputEl.type = "password";
-			t.setPlaceholder("GOCSPX-...").setValue(s.googleClientSecret).onChange((v) => {
-				s.googleClientSecret = v;
-				save();
-			});
-		});
-
-		section("CalDAV accounts", "caldav");
-		intro("iCloud, Fastmail, Nextcloud, Radicale, and anything else speaking CalDAV. Read-only. Credentials stay in this vault's plugin data; iCloud and Fastmail want an app-specific password, not your account password.");
+	/** The CalDAV accounts and the collections under each. */
+	private drawCaldavAccounts() {
+		const host = this.caldavHost;
+		if (!host) return;
+		host.empty();
+		const s = this.plugin.settings;
+		const save = () => this.plugin.queueSave();
 		for (const account of s.caldavAccounts) {
-			new Setting(c)
+			new Setting(host)
 				.setName(account.name)
 				.setDesc(account.serverUrl)
 				.addButton((b) =>
@@ -13724,7 +13837,7 @@ class PCSettingTab extends PluginSettingTab {
 							s.caldavAccounts = [...s.caldavAccounts];
 							save();
 							this.plugin.sourcesChanged();
-							this.display();
+							this.drawCaldavAccounts();
 						}).open();
 					})
 				)
@@ -13733,11 +13846,11 @@ class PCSettingTab extends PluginSettingTab {
 						s.caldavAccounts = s.caldavAccounts.filter((a) => a.id !== account.id);
 						save();
 						this.plugin.sourcesChanged();
-						this.display();
+						this.drawCaldavAccounts();
 					})
 				);
 			for (const coll of account.collections) {
-				new Setting(c)
+				new Setting(host)
 					.setName(coll.name)
 					.setClass("pcal-subsetting")
 					.addColorPicker((p) =>
@@ -13756,22 +13869,17 @@ class PCSettingTab extends PluginSettingTab {
 					);
 			}
 		}
-		new Setting(c).setName("Add a CalDAV account")
-			.then((st) => help(st, "Connects a calendar server that speaks CalDAV (Fastmail, iCloud, Nextcloud, Radicale, and most self-hosted servers). You provide the server URL and credentials; an app-specific password is the right choice wherever the provider offers one.")).addButton((b) =>
-			b.setButtonText("Add account").onClick(() => {
-				new CaldavAccountModal(this.app, null, (account) => {
-					s.caldavAccounts = [...s.caldavAccounts, account];
-					save();
-					this.plugin.sourcesChanged();
-					this.display();
-				}).open();
-			})
-		);
+	}
 
-		section("ICS feeds", "ics");
-		intro("Read-only iCalendar subscriptions: holiday calendars, a published Outlook or Google calendar, team schedules.");
+	/** The ICS subscriptions. */
+	private drawIcsFeeds() {
+		const host = this.icsHost;
+		if (!host) return;
+		host.empty();
+		const s = this.plugin.settings;
+		const save = () => this.plugin.queueSave();
 		for (const feed of s.icsFeeds) {
-			new Setting(c)
+			new Setting(host)
 				.setName(feed.name)
 				.setDesc(feed.url)
 				.addColorPicker((p) =>
@@ -13796,7 +13904,7 @@ class PCSettingTab extends PluginSettingTab {
 							s.icsFeeds = [...s.icsFeeds];
 							save();
 							this.plugin.sourcesChanged();
-							this.display();
+							this.drawIcsFeeds();
 						}).open();
 					})
 				)
@@ -13805,26 +13913,21 @@ class PCSettingTab extends PluginSettingTab {
 						s.icsFeeds = s.icsFeeds.filter((f) => f.id !== feed.id);
 						save();
 						this.plugin.sourcesChanged();
-						this.display();
+						this.drawIcsFeeds();
 					})
 				);
 		}
-		new Setting(c).setName("Add an ICS feed")
-			.then((st) => help(st, "Subscribes to a read-only calendar published as an .ics URL: a shared team calendar, a sports schedule, a holiday feed. Feeds are fetched on the refresh timer and never written to, so nothing here can change the source.")).addButton((b) =>
-			b.setButtonText("Add feed").onClick(() => {
-				new IcsFeedModal(this.app, null, (feed) => {
-					s.icsFeeds = [...s.icsFeeds, feed];
-					save();
-					this.plugin.sourcesChanged();
-					this.display();
-				}).open();
-			})
-		);
+	}
 
-		section("Vault notes", "vault");
-		intro("Notes with a date property render as events beside your calendars: deadlines, dated meeting notes, anything. Click one to open the note; drag a timed one to rewrite its date. Entirely local.");
+	/** The vault-note sources. */
+	private drawVaultSources() {
+		const host = this.vaultHost;
+		if (!host) return;
+		host.empty();
+		const s = this.plugin.settings;
+		const save = () => this.plugin.queueSave();
 		for (const v of s.vaultSources) {
-			new Setting(c)
+			new Setting(host)
 				.setName(v.name)
 				.setDesc(`${v.folder || "Whole vault"} · ${v.dateProp}${v.endProp ? " to " + v.endProp : ""}`)
 				.addColorPicker((p) =>
@@ -13849,7 +13952,7 @@ class PCSettingTab extends PluginSettingTab {
 							s.vaultSources = [...s.vaultSources];
 							save();
 							this.plugin.sourcesChanged();
-							this.display();
+							this.drawVaultSources();
 						}).open();
 					})
 				)
@@ -13858,651 +13961,1010 @@ class PCSettingTab extends PluginSettingTab {
 						s.vaultSources = s.vaultSources.filter((x) => x.id !== v.id);
 						save();
 						this.plugin.sourcesChanged();
-						this.display();
+						this.drawVaultSources();
 					})
 				);
 		}
-		new Setting(c).setName("Add a vault source")
-			.then((st) => help(st, "Turns notes in your vault into calendar events, reading a date property you choose. Useful for anything already tracked as notes (birthdays, deadlines, travel) that you would rather see on the calendar than remember separately.")).addButton((b) =>
-			b.setButtonText("Add source").onClick(() => {
-				new VaultSourceModal(this.app, null, (src) => {
-					s.vaultSources = [...s.vaultSources, src];
-					save();
-					this.plugin.sourcesChanged();
-					this.display();
-				}).open();
-			})
-		);
+	}
 
-		/* ---------------- Display ---------------- */
+	/** Every row of the settings tab, in order, as plain data: the one source
+	 *  both renderers draw from, so they cannot drift apart. Built fresh on each
+	 *  render because much of this tab reflects live account state. */
+	private buildPages(): Page[] {
+		const s = this.plugin.settings;
+		const save = () => this.plugin.queueSave();
+		// A section's opening paragraph, carried as a row rather than loose text:
+		// the theme cards every .setting-item, so a bare <p> floats outside the
+		// boxes and breaks the column the rest of the rows line up on.
+		const intro = (text: string): Row => ({ name: "", desc: text, cls: "pcal-section-intro" });
 
-		section("Views", "calendar");
-		new Setting(c).setName("Default view")
-			.then((st) => help(st, "Which layout the calendar opens on: month for the shape of the weeks ahead, week or work week for hour-by-hour detail, day for one column, agenda for a plain chronological list. Switching views in the calendar itself does not change this, so the view you open on stays predictable.")).addDropdown((d) =>
-			d
-				.addOptions({ month: "Month", week: "Week", workweek: "Work week", day: "Day", agenda: "Agenda" })
-				.setValue(s.defaultMode)
-				.onChange((v) => {
-					s.defaultMode = v as ViewMode;
-					save();
-				})
-		);
-		new Setting(c).setName("Default view on phones")
-			.then((st) => help(st, "The view a phone opens on, kept separate because a month grid that reads well on a monitor is cramped on a handset. Agenda is usually the right answer there.")).addDropdown((d) =>
-			d
-				.addOptions({ agenda: "Agenda", day: "Day", month: "Month", week: "Week", workweek: "Work week" })
-				.setValue(s.phoneDefaultMode)
-				.onChange((v) => {
-					s.phoneDefaultMode = v as ViewMode;
-					save();
-				})
-		);
-		new Setting(c).setName("Week starts on")
-			.then((st) => help(st, "Which day begins the week in the month grid and week view. Affects only how the calendar is drawn, never the events themselves.")).addDropdown((d) =>
-			d
-				.addOptions({ monday: "Monday", sunday: "Sunday" })
-				.setValue(s.weekStartsMonday ? "monday" : "sunday")
-				.onChange((v) => {
-					s.weekStartsMonday = v === "monday";
-					save();
-					this.plugin.notify();
-				})
-		);
-		new Setting(c).setName("24-hour clock")
-			.then((st) => help(st, "Show times as 14:00 rather than 2 PM, everywhere the plugin prints a time.")).addToggle((t) =>
-			t.setValue(s.use24h).onChange((v) => {
-				s.use24h = v;
-				save();
-				this.plugin.notify();
-			})
-		);
-		new Setting(c).setName("Week numbers")
-			.then((st) => help(st, "Show the ISO week number beside each week in the month and week views. Weeks belong to the year containing their Thursday, so the first days of January can carry the previous year's final week number.")).addToggle((t) =>
-			t.setValue(s.showWeekNumbers).onChange((v) => {
-				s.showWeekNumbers = v;
-				save();
-				this.plugin.notify();
-			})
-		);
-		const agendaSt = new Setting(c).setName("Agenda covers")
-			.then((st) => help(st, "How far ahead the agenda view lists, in days. A longer window means one scroll shows more of what is coming, at the cost of a busier list.")).setDesc(`${s.agendaDays} days`);
-		agendaSt.addSlider((sl) =>
-			sl
-				.setLimits(7, 90, 1)
-				.setValue(s.agendaDays)
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.agendaDays = v;
-					agendaSt.setDesc(`${v} days`);
-					save();
-					this.plugin.notify();
-				})
-		);
-		const dayStartSt = new Setting(c).setName("Scroll the day to").setDesc(`${s.dayStartHour}:00`);
-		help(dayStartSt, "Where the week and day grids scroll to when they open. The whole 24 hours stay reachable; this only picks the first hour in view.");
-		dayStartSt.addSlider((sl) =>
-			sl
-				.setLimits(0, 12, 1)
-				.setValue(s.dayStartHour)
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.dayStartHour = v;
-					dayStartSt.setDesc(`${v}:00`);
-					save();
-				})
-		);
-		const tzSt = new Setting(c).setName("Second time zone").setDesc("Shown beside the hours in week and day views.");
-		help(tzSt, "An IANA zone name like Europe/Berlin, Asia/Manila, or America/Los_Angeles. Leave empty for one clock. An unrecognized name simply hides the column rather than erroring.");
-		tzSt.addText((t) =>
-			t.setPlaceholder("Europe/Berlin").setValue(s.secondTimeZone).onChange((v) => {
-				s.secondTimeZone = v;
-				save();
-				this.plugin.notify();
-			})
-		);
-		const declinedSt = new Setting(c).setName("Show declined events").addToggle((t) =>
-			t.setValue(s.showDeclined).onChange((v) => {
-				s.showDeclined = v;
-				save();
-				this.plugin.notify();
-			})
-		);
-		help(declinedSt, "Only Microsoft 365 knows which invites you declined. Off, they disappear; on, they render struck through.");
-		const needsSt = new Setting(c).setName("Awaiting response color").addColorPicker((p) =>
-			p.setValue(s.calNeedsActionColor).onChange((v) => {
-				s.calNeedsActionColor = v;
-				save();
-				this.plugin.notify();
-			})
-		);
-		help(needsSt, "Background tint for invites you have not accepted yet.");
+		/* ---------------- Microsoft 365 ---------------- */
 
-		section("Refresh", "calendar");
-		const remSt = new Setting(c).setName("Meeting reminders").setDesc(s.reminderMinutes > 0 ? `${s.reminderMinutes} minutes before` : "Off");
-		help(remSt, "While Obsidian is open, a sticky notice appears before each timed meeting, with a Join button when there is a link. Declined meetings and all-day events stay quiet.");
-		remSt.addSlider((sl) =>
-			sl
-				.setLimits(0, 30, 1)
-				.setValue(s.reminderMinutes)
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.reminderMinutes = v;
-					remSt.setDesc(v > 0 ? `${v} minutes before` : "Off");
-					save();
-				})
-		);
-		const refreshSt = new Setting(c).setName("Auto-refresh")
-			.then((st) => help(st, "How often connected calendars and mail are re-fetched while Obsidian is open. Shorter means fresher and more requests; 0 turns the timer off so nothing is fetched until you refresh by hand.")).setDesc(s.refreshMinutes > 0 ? `Every ${s.refreshMinutes} minute${s.refreshMinutes === 1 ? "" : "s"}` : "Manual only (R or the refresh button)");
-		refreshSt.addSlider((sl) =>
-			sl
-				.setLimits(0, 60, 1)
-				.setValue(s.refreshMinutes)
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.refreshMinutes = v;
-					refreshSt.setDesc(v > 0 ? `Every ${v} minute${v === 1 ? "" : "s"}` : "Manual only (R or the refresh button)");
-					save();
-					this.plugin.refreshCadenceChanged();
-				})
-		);
+		const graphAccounts: Row[] = [
+			intro("Work or personal Microsoft accounts, signed in with a device code in your browser; the plugin never sees a password. Each account expands to its calendars, and a friendly name tells work and personal apart at a glance."),
+			{
+				name: "Add a Microsoft 365 account",
+				desc: "Work or personal; a short wizard picks the right app registration and signs it in.",
+				help: "Starts the sign-in wizard. You sign in on Microsoft's own page in your browser and paste back a short code, so no password ever reaches the plugin. A work account usually rides a shared app registration; a personal one gets its own. Each account you add brings its calendars along and can be renamed afterwards.",
+				build: (st) => {
+					st.addButton((b) => b.setButtonText("Add account").setCta().onClick(() => new GraphAccountWizard(this.app, this.plugin).open()));
+				},
+			},
+			this.listRow(
+				"Microsoft 365 accounts",
+				["calendars", "inbox", "rename", "reconnect"],
+				(host) => (this.graphHost = host),
+				() => this.drawGraphAccounts()
+			),
+		];
 
-		section("Mail", "mail");
-		const histSt = new Setting(c)
-			.setName("Mail history")
-			.then((st) => help(st, "How far back mail is pulled. This is also the ceiling on what Power Assistant's 'Ask your email' can search, because that window only ever indexes messages this plugin has already fetched. Raising it makes the next sync fetch more, once."))
-			.setDesc(`Pull the last ${s.mailHistoryDays} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`);
-		histSt.addSlider((sl) =>
-			sl
-				.setLimits(7, 365, 1)
-				.setValue(Math.min(365, Math.max(7, s.mailHistoryDays || 45)))
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.mailHistoryDays = v;
-					histSt.setDesc(`Pull the last ${v} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`);
-					save();
-				})
-		);
-		const capSt = new Setting(c)
-			.setName("Messages kept per folder")
-			.then((st) => help(st, "How many of the newest messages survive each sync, per folder. This is the setting that actually bounds how much mail you can search: a wide day range changes nothing while this stays low, because older messages are dropped no matter how far back the window reaches. Higher costs memory and a longer first sync."))
-			.setDesc(`Retain up to ${s.mailMaxMessages} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`);
-		capSt.addSlider((sl) =>
-			sl
-				.setLimits(50, 5000, 50)
-				.setValue(Math.min(5000, Math.max(50, s.mailMaxMessages || 50)))
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.mailMaxMessages = v;
-					capSt.setDesc(`Retain up to ${v} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`);
-					save();
-				})
-		);
-		new Setting(c)
-			.setName("Saved-mail folder")
-			.then((st) => help(st, "Where the Save-to-note button files an email. It has its own setting rather than sharing the calendar's notes folder so that filing mail somewhere specific (a Power Connect encrypted folder, say) does not drag event notes along with it. Empty falls back to the calendar notes folder."))
-			.setDesc(
-				`Where the "Save to note" button files an email. Empty uses the calendar notes folder (${s.notesFolder.trim() || "Calendar"}). Point it at a Power Connect encrypted folder to keep saved mail encrypted on Dropbox.`
-			)
-			.addText((t) =>
-				t.setPlaceholder(s.notesFolder.trim() || "Calendar").setValue(s.mailNotesFolder).onChange((v) => {
-					s.mailNotesFolder = v.trim();
-					save();
-				})
-			);
-		new Setting(c).setName("Mark as read")
-			.then((st) => help(st, "When a message counts as read. 'As soon as it is selected' matches most mail apps; a short delay avoids marking things read as you arrow past them; 'only when I mark it myself' leaves the decision entirely to you.")).addDropdown((d) =>
-			d
-				.addOptions({
-					select: "As soon as a message is selected",
-					delay: "A few seconds after it is selected",
-					change: "When the selection changes",
-					manual: "Only when I mark it myself",
-				})
-				.setValue(s.markRead)
-				.onChange((v) => {
-					s.markRead = v as PCSettings["markRead"];
-					save();
-					this.display(); // the seconds slider follows the choice
-				})
-		);
+		const graphAppReady = !!this.plugin.effectiveClientId();
+		const graphApp: Row[] = [
+			intro("The shared app registration new work sign-ins ride, borrowed from Power Assistant when present. Add account handles all of this on its own; this section is for inspecting or swapping the shared app. Already-connected accounts keep the app they signed in with."),
+			{
+				name: "Create the app registration",
+				desc: graphAppReady
+					? this.plugin.usingSiblingApp()
+						? "Power Assistant's app registration is borrowed automatically; nothing to do here."
+						: "A shared app is set; new sign-ins use it."
+					: "The Add account wizard creates this inline; these steps set the shared app from here instead.",
+				help: "The registration is a one-time entry in Microsoft's systems that sign-ins name, so consent screens can say who is asking. The guide covers the registration fields, the one switch device-code sign-in needs, and where the Application (client) ID lives: paste that ID below when you have it. When Power Assistant is installed and already set up, its app is borrowed automatically and none of this is needed.",
+				build: (st) => {
+					st.addButton((b) => {
+						b.setButtonText("Show the steps").onClick(() =>
+							new AzureAppGuideModal(this.app, (id) => {
+								s.graphClientId = id;
+								save();
+								this.refresh();
+							}).open()
+						);
+						if (!graphAppReady) b.setCta();
+					});
+				},
+			},
+			{
+				name: "Shared app",
+				desc: this.plugin.usingSiblingApp()
+					? "Power Assistant's app registration, borrowed automatically."
+					: s.graphClientId.trim()
+						? s.graphClientId.trim() + (s.graphTenant.trim() ? " · tenant " + s.graphTenant.trim() : "")
+						: "None yet; the wizard sets it on the first work sign-in.",
+				help: "The Azure app registration that new work sign-ins use. Power Assistant's is borrowed automatically when that plugin is present, so there is usually nothing to set. Accounts already connected keep whichever app they signed in with, so swapping this only affects the next sign-in.",
+				build: (st) => {
+					st.addExtraButton((b) =>
+						b.setIcon("pencil").setTooltip(this.showGraphAppFields ? "Hide the fields" : "Edit the ID and tenant").onClick(() => {
+							this.showGraphAppFields = !this.showGraphAppFields;
+							this.refresh();
+						})
+					);
+				},
+			},
+		];
+		if (this.showGraphAppFields) {
+			graphApp.push({
+				name: "Application (client) ID",
+				cls: "pcal-subsetting",
+				desc: this.plugin.usingSiblingApp() ? "Using Power Assistant's app registration. Enter an ID here to use a different one." : "From your Azure app registration's Overview page.",
+				help: "From the Overview page of an app created with 'Show the steps' above (any registration with public client flows on works). When Power Assistant is installed and already set up, its app is borrowed automatically and this field can stay empty. Already-connected accounts keep the app they signed in with; this field only steers new sign-ins.",
+				build: (st) => {
+					st.addText((t) => {
+						t.setPlaceholder(this.plugin.usingSiblingApp() ? this.plugin.effectiveClientId() : "00000000-0000-...").setValue(s.graphClientId).onChange((v) => {
+							s.graphClientId = v;
+							save();
+						});
+						t.inputEl.addEventListener("blur", () => this.refresh());
+					});
+				},
+			});
+			graphApp.push({
+				name: "Tenant",
+				cls: "pcal-subsetting",
+				desc: "'common' works for most accounts; single-organization apps need their Directory (tenant) ID.",
+				help: "Which Microsoft directory the sign-in goes through. 'common' suits personal accounts and most work ones; an organization whose app registration is single-tenant needs its Directory (tenant) ID instead, which an administrator can supply. Getting this wrong shows up as a sign-in that refuses the account rather than anything subtler.",
+				build: (st) => {
+					st.addText((t) => {
+						t.setPlaceholder(this.plugin.usingSiblingApp() && this.plugin.effectiveTenant() !== "common" ? this.plugin.effectiveTenant() : "common").setValue(s.graphTenant).onChange((v) => {
+							s.graphTenant = v;
+							save();
+						});
+						t.inputEl.addEventListener("blur", () => this.refresh());
+					});
+				},
+			});
+		}
+
+		/* ---------------- Google ---------------- */
+
+		const googleAccounts: Row[] = [
+			intro("Google accounts, signed in through your browser. Each account expands to its calendars, and a friendly name tells accounts apart at a glance."),
+			{
+				name: "Add a Google account",
+				desc: this.plugin.googleReady() ? "Signs in through your browser. Desktop only; the connection syncs." : "Needs your Google Cloud client ID and secret first (Google app, below).",
+				help: "Starts Google's sign-in in your browser. Google requires your own OAuth client (the id and secret above) because installed apps cannot ship a shared one; once that is filled in, adding accounts is a click each.",
+				build: (st) => {
+					st.addButton((b) => b.setButtonText("Add account").setCta().onClick(() => void this.plugin.connectGoogle()));
+				},
+			},
+			this.listRow(
+				"Google accounts",
+				["calendars", "rename", "reconnect"],
+				(host) => (this.googleHost = host),
+				() => this.drawGoogleAccounts()
+			),
+		];
+
+		const googleApp: Row[] = [
+			intro("Google requires your own free Google Cloud project, since its terms forbid shipping shared credentials inside an open plugin. One time: create a project at console.cloud.google.com, enable the Google Calendar API, configure the OAuth consent screen as External and press Publish app, then create an OAuth client of type Desktop app and paste its ID and secret here. The README walks through every step."),
+			{
+				name: "Client ID",
+				help: "Press Publish app on the OAuth consent screen: a project left in Testing mode gets refresh tokens that expire every 7 days, which reads as being signed out weekly. Publishing an External app you never submit for verification just means a one-time 'unverified app' warning at sign-in.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setPlaceholder("....apps.googleusercontent.com").setValue(s.googleClientId).onChange((v) => {
+							s.googleClientId = v;
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Client secret",
+				help: "The secret half of your Google OAuth client, from the same credentials page as the client id. Google documents the installed-app secret as not confidential, which is why sharing it across your own devices is how they all sign in to the same app. Stored per device and sent only to Google.",
+				build: (st) => {
+					st.addText((t) => {
+						t.inputEl.type = "password";
+						t.setPlaceholder("GOCSPX-...").setValue(s.googleClientSecret).onChange((v) => {
+							s.googleClientSecret = v;
+							save();
+						});
+					});
+				},
+			},
+		];
+
+		/* ---------------- CalDAV ---------------- */
+
+		const caldav: Row[] = [
+			intro("iCloud, Fastmail, Nextcloud, Radicale, and anything else speaking CalDAV. Read-only. Credentials stay in this vault's plugin data; iCloud and Fastmail want an app-specific password, not your account password."),
+			this.listRow(
+				"CalDAV accounts",
+				["collections", "calendars"],
+				(host) => (this.caldavHost = host),
+				() => this.drawCaldavAccounts()
+			),
+			{
+				name: "Add a CalDAV account",
+				help: "Connects a calendar server that speaks CalDAV (Fastmail, iCloud, Nextcloud, Radicale, and most self-hosted servers). You provide the server URL and credentials; an app-specific password is the right choice wherever the provider offers one.",
+				build: (st) => {
+					st.addButton((b) =>
+						b.setButtonText("Add account").onClick(() => {
+							new CaldavAccountModal(this.app, null, (account) => {
+								s.caldavAccounts = [...s.caldavAccounts, account];
+								save();
+								this.plugin.sourcesChanged();
+								this.drawCaldavAccounts();
+							}).open();
+						})
+					);
+				},
+			},
+		];
+
+		/* ---------------- ICS feeds ---------------- */
+
+		const ics: Row[] = [
+			intro("Read-only iCalendar subscriptions: holiday calendars, a published Outlook or Google calendar, team schedules."),
+			this.listRow(
+				"ICS feeds",
+				["subscriptions", "calendars"],
+				(host) => (this.icsHost = host),
+				() => this.drawIcsFeeds()
+			),
+			{
+				name: "Add an ICS feed",
+				help: "Subscribes to a read-only calendar published as an .ics URL: a shared team calendar, a sports schedule, a holiday feed. Feeds are fetched on the refresh timer and never written to, so nothing here can change the source.",
+				build: (st) => {
+					st.addButton((b) =>
+						b.setButtonText("Add feed").onClick(() => {
+							new IcsFeedModal(this.app, null, (feed) => {
+								s.icsFeeds = [...s.icsFeeds, feed];
+								save();
+								this.plugin.sourcesChanged();
+								this.drawIcsFeeds();
+							}).open();
+						})
+					);
+				},
+			},
+		];
+
+		/* ---------------- Vault notes ---------------- */
+
+		const vault: Row[] = [
+			intro("Notes with a date property render as events beside your calendars: deadlines, dated meeting notes, anything. Click one to open the note; drag a timed one to rewrite its date. Entirely local."),
+			this.listRow(
+				"Vault notes",
+				["sources", "date property"],
+				(host) => (this.vaultHost = host),
+				() => this.drawVaultSources()
+			),
+			{
+				name: "Add a vault source",
+				help: "Turns notes in your vault into calendar events, reading a date property you choose. Useful for anything already tracked as notes (birthdays, deadlines, travel) that you would rather see on the calendar than remember separately.",
+				build: (st) => {
+					st.addButton((b) =>
+						b.setButtonText("Add source").onClick(() => {
+							new VaultSourceModal(this.app, null, (src) => {
+								s.vaultSources = [...s.vaultSources, src];
+								save();
+								this.plugin.sourcesChanged();
+								this.drawVaultSources();
+							}).open();
+						})
+					);
+				},
+			},
+		];
+
+		/* ---------------- Calendar ---------------- */
+
+		const views: Row[] = [
+			{
+				name: "Default view",
+				help: "Which layout the calendar opens on: month for the shape of the weeks ahead, week or work week for hour-by-hour detail, day for one column, agenda for a plain chronological list. Switching views in the calendar itself does not change this, so the view you open on stays predictable.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ month: "Month", week: "Week", workweek: "Work week", day: "Day", agenda: "Agenda" })
+							.setValue(s.defaultMode)
+							.onChange((v) => {
+								s.defaultMode = v as ViewMode;
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Default view on phones",
+				help: "The view a phone opens on, kept separate because a month grid that reads well on a monitor is cramped on a handset. Agenda is usually the right answer there.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ agenda: "Agenda", day: "Day", month: "Month", week: "Week", workweek: "Work week" })
+							.setValue(s.phoneDefaultMode)
+							.onChange((v) => {
+								s.phoneDefaultMode = v as ViewMode;
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Week starts on",
+				help: "Which day begins the week in the month grid and week view. Affects only how the calendar is drawn, never the events themselves.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ monday: "Monday", sunday: "Sunday" })
+							.setValue(s.weekStartsMonday ? "monday" : "sunday")
+							.onChange((v) => {
+								s.weekStartsMonday = v === "monday";
+								save();
+								this.plugin.notify();
+							})
+					);
+				},
+			},
+			{
+				name: "24-hour clock",
+				help: "Show times as 14:00 rather than 2 PM, everywhere the plugin prints a time.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.use24h).onChange((v) => {
+							s.use24h = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Week numbers",
+				help: "Show the ISO week number beside each week in the month and week views. Weeks belong to the year containing their Thursday, so the first days of January can carry the previous year's final week number.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.showWeekNumbers).onChange((v) => {
+							s.showWeekNumbers = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Agenda covers",
+				desc: `${s.agendaDays} days`,
+				help: "How far ahead the agenda view lists, in days. A longer window means one scroll shows more of what is coming, at the cost of a busier list.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(7, 90, 1)
+							.setValue(s.agendaDays)
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.agendaDays = v;
+								st.setDesc(`${v} days`);
+								save();
+								this.plugin.notify();
+							})
+					);
+				},
+			},
+			{
+				name: "Scroll the day to",
+				desc: `${s.dayStartHour}:00`,
+				help: "Where the week and day grids scroll to when they open. The whole 24 hours stay reachable; this only picks the first hour in view.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(0, 12, 1)
+							.setValue(s.dayStartHour)
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.dayStartHour = v;
+								st.setDesc(`${v}:00`);
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Second time zone",
+				desc: "Shown beside the hours in week and day views.",
+				help: "An IANA zone name like Europe/Berlin, Asia/Manila, or America/Los_Angeles. Leave empty for one clock. An unrecognized name simply hides the column rather than erroring.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setPlaceholder("Europe/Berlin").setValue(s.secondTimeZone).onChange((v) => {
+							s.secondTimeZone = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Show declined events",
+				help: "Only Microsoft 365 knows which invites you declined. Off, they disappear; on, they render struck through.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.showDeclined).onChange((v) => {
+							s.showDeclined = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Awaiting response color",
+				help: "Background tint for invites you have not accepted yet.",
+				build: (st) => {
+					st.addColorPicker((p) =>
+						p.setValue(s.calNeedsActionColor).onChange((v) => {
+							s.calNeedsActionColor = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+		];
+
+		const refreshRows: Row[] = [
+			{
+				name: "Meeting reminders",
+				desc: s.reminderMinutes > 0 ? `${s.reminderMinutes} minutes before` : "Off",
+				help: "While Obsidian is open, a sticky notice appears before each timed meeting, with a Join button when there is a link. Declined meetings and all-day events stay quiet.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(0, 30, 1)
+							.setValue(s.reminderMinutes)
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.reminderMinutes = v;
+								st.setDesc(v > 0 ? `${v} minutes before` : "Off");
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Auto-refresh",
+				desc: s.refreshMinutes > 0 ? `Every ${s.refreshMinutes} minute${s.refreshMinutes === 1 ? "" : "s"}` : "Manual only (R or the refresh button)",
+				help: "How often connected calendars and mail are re-fetched while Obsidian is open. Shorter means fresher and more requests; 0 turns the timer off so nothing is fetched until you refresh by hand.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(0, 60, 1)
+							.setValue(s.refreshMinutes)
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.refreshMinutes = v;
+								st.setDesc(v > 0 ? `Every ${v} minute${v === 1 ? "" : "s"}` : "Manual only (R or the refresh button)");
+								save();
+								this.plugin.refreshCadenceChanged();
+							})
+					);
+				},
+			},
+		];
+
+		const availability: Row[] = [
+			intro("Copy free slots (command palette) reads this window and puts the next five workdays' open times on the clipboard, ready to paste into a mail."),
+			{
+				name: "Free day starts",
+				desc: `${s.freeFromHour}:00`,
+				help: "The earliest hour the free-slot finder will suggest. It never proposes a meeting before this, so an early calendar block does not turn into a breakfast invitation.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(5, 12, 1)
+							.setValue(s.freeFromHour)
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.freeFromHour = v;
+								st.setDesc(`${v}:00`);
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Free day ends",
+				desc: `${s.freeToHour}:00`,
+				help: "The latest hour the free-slot finder will suggest, so a gap late in the evening is not offered as availability.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(12, 22, 1)
+							.setValue(s.freeToHour)
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.freeToHour = v;
+								st.setDesc(`${v}:00`);
+								save();
+							})
+					);
+				},
+			},
+		];
+
+		const weather: Row[] = [
+			intro("The sidebar agenda's day headers carry the forecast from Open-Meteo, a free service needing no account. Type a city and press Look up; clearing the city and looking up again switches weather off."),
+			{
+				name: "Location",
+				desc: s.weatherLat.trim() ? `Forecast for ${s.weatherPlace || `${s.weatherLat}, ${s.weatherLon}`}.` : "A city name, like 'Chicago, IL' or 'Fort Wayne'.",
+				help: "The place the forecast is for. Type a town or city and pick from the suggestions; the coordinates are stored, so a renamed or ambiguous place stays resolved to the spot you chose.",
+				build: (st) => {
+					let weatherQuery = s.weatherPlace;
+					st.addText((t) => t.setValue(s.weatherPlace).onChange((v) => (weatherQuery = v)));
+					st.addButton((b) =>
+						b.setButtonText("Look up").setCta().onClick(async () => {
+							const q = weatherQuery.trim();
+							if (!q) {
+								s.weatherPlace = s.weatherLat = s.weatherLon = "";
+								this.plugin.clearWeather();
+								save();
+								this.refresh();
+								return;
+							}
+							const hit = await this.plugin.geocodePlace(q);
+							if (!hit) {
+								new Notice("Power Desk: no place with that name was found.");
+								return;
+							}
+							s.weatherPlace = hit.label;
+							s.weatherLat = hit.lat;
+							s.weatherLon = hit.lon;
+							this.plugin.clearWeather();
+							save();
+							this.refresh();
+							new Notice(`Power Desk: forecast set to ${hit.label}.`);
+						})
+					);
+				},
+			},
+			{
+				name: "Unit",
+				help: "Whether the forecast shows Fahrenheit or Celsius.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ f: "Fahrenheit", c: "Celsius" })
+							.setValue(s.weatherUnit)
+							.onChange((v) => {
+								s.weatherUnit = v as "f" | "c";
+								this.plugin.clearWeather();
+								save();
+							})
+					);
+				},
+			},
+		];
+
+		/* ---------------- Mail ---------------- */
+
+		const mail: Row[] = [
+			{
+				name: "Mail history",
+				desc: `Pull the last ${s.mailHistoryDays} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`,
+				help: "How far back mail is pulled. This is also the ceiling on what Power Assistant's 'Ask your email' can search, because that window only ever indexes messages this plugin has already fetched. Raising it makes the next sync fetch more, once.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(7, 365, 1)
+							.setValue(Math.min(365, Math.max(7, s.mailHistoryDays || 45)))
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.mailHistoryDays = v;
+								st.setDesc(`Pull the last ${v} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`);
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Messages kept per folder",
+				desc: `Retain up to ${s.mailMaxMessages} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`,
+				help: "How many of the newest messages survive each sync, per folder. This is the setting that actually bounds how much mail you can search: a wide day range changes nothing while this stays low, because older messages are dropped no matter how far back the window reaches. Higher costs memory and a longer first sync.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(50, 5000, 50)
+							.setValue(Math.min(5000, Math.max(50, s.mailMaxMessages || 50)))
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.mailMaxMessages = v;
+								st.setDesc(`Retain up to ${v} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`);
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Saved-mail folder",
+				desc: `Where the "Save to note" button files an email. Empty uses the calendar notes folder (${s.notesFolder.trim() || "Calendar"}). Point it at a Power Connect encrypted folder to keep saved mail encrypted on Dropbox.`,
+				help: "Where the Save-to-note button files an email. It has its own setting rather than sharing the calendar's notes folder so that filing mail somewhere specific (a Power Connect encrypted folder, say) does not drag event notes along with it. Empty falls back to the calendar notes folder.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setPlaceholder(s.notesFolder.trim() || "Calendar").setValue(s.mailNotesFolder).onChange((v) => {
+							s.mailNotesFolder = v.trim();
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Mark as read",
+				help: "When a message counts as read. 'As soon as it is selected' matches most mail apps; a short delay avoids marking things read as you arrow past them; 'only when I mark it myself' leaves the decision entirely to you.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({
+								select: "As soon as a message is selected",
+								delay: "A few seconds after it is selected",
+								change: "When the selection changes",
+								manual: "Only when I mark it myself",
+							})
+							.setValue(s.markRead)
+							.onChange((v) => {
+								s.markRead = v as PCSettings["markRead"];
+								save();
+								this.refresh(); // the seconds slider follows the choice
+							})
+					);
+				},
+			},
+		];
 		if (s.markRead === "delay") {
-			const secSt = new Setting(c).setName("Mark read after")
-			.then((st) => help(st, "How long a message stays selected before it counts as read. Long enough to arrow through a list without clearing everything, short enough that a message you actually stopped on is marked.")).setDesc(`${s.markReadSeconds} second${s.markReadSeconds === 1 ? "" : "s"}`).setClass("pcal-subsetting");
-			secSt.addSlider((sl) =>
-				sl
-					.setLimits(1, 30, 1)
-					.setValue(s.markReadSeconds)
-					.setDynamicTooltip()
-					.onChange((v) => {
-						s.markReadSeconds = v;
-						secSt.setDesc(`${v} second${v === 1 ? "" : "s"}`);
-						save();
-					})
-			);
+			mail.push({
+				name: "Mark read after",
+				cls: "pcal-subsetting",
+				desc: `${s.markReadSeconds} second${s.markReadSeconds === 1 ? "" : "s"}`,
+				help: "How long a message stays selected before it counts as read. Long enough to arrow through a list without clearing everything, short enough that a message you actually stopped on is marked.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						sl
+							.setLimits(1, 30, 1)
+							.setValue(s.markReadSeconds)
+							.setDynamicTooltip()
+							.onChange((v) => {
+								s.markReadSeconds = v;
+								st.setDesc(`${v} second${v === 1 ? "" : "s"}`);
+								save();
+							})
+					);
+				},
+			});
 		}
-		const keepSt = new Setting(c).setName("Unread filter keeps items unread").addToggle((t) =>
-			t.setValue(s.unreadFilterKeepsUnread).onChange((v) => {
-				s.unreadFilterKeepsUnread = v;
-				save();
-			})
-		);
-		help(keepSt, "While the Unread filter is on in the Mail view, selecting a message never marks it read; only the explicit read buttons do. Exactly Outlook's 'always keep items unread' behavior for unread filtering.");
-		const splitSt = new Setting(c)
-			.setName("Split the inbox")
-			.setDesc("Group the inbox into Priority, Focused, Notifications, and Other, the way Spark and Shortwave bundle a list. Folders you file into stay flat.")
-			.addToggle((t) =>
-				t.setValue(s.mailSplitInbox).onChange((v) => {
-					s.mailSplitInbox = v;
-					save();
-					this.plugin.notify();
-				})
-			);
-		help(
-			splitSt,
-			"Priority is anything flagged or marked high importance. Focused and Other come from Outlook's own verdict, the same one the Focused Inbox uses, so it is trained on how you actually treat your mail rather than guessed here. Notifications is the one judgement this makes on its own: senders whose address is a machine's, like no-reply, notifications, or a ticketing or build system. A person mailing from one of those domains still reads as a person. It sits above Other because ticket and build mail is work. Sections fold shut and remember it, and the split applies to the unified list, an inbox, and Unread Mail; browsing a filing folder or Sent Items stays flat, and a search always does."
-		);
-		const convoSt = new Setting(c)
-			.setName("Show as conversations")
-			.setDesc("Group a back-and-forth into one row that expands, like Outlook's Show as Conversations. Search results are never grouped.")
-			.addToggle((t) =>
-				t.setValue(s.mailConversations).onChange((v) => {
-					s.mailConversations = v;
-					save();
-					this.plugin.notify();
-				})
-			);
-		help(
-			convoSt,
-			"A conversation collapses to a single row carrying everyone who wrote, the message count, and the marks off every message in it, so an attachment three replies down is still visible from the list. The twisty on the left opens it in place, and the reading pane lists the whole thread so you can walk it without going back. Ticking, archiving, or deleting a collapsed conversation takes all of it, which is what Outlook does. Search results stay ungrouped on purpose: a search asks about messages, and burying a match inside a collapsed thread would misreport what matched."
-		);
-		const photoSt = new Setting(c)
-			.setName("Sender photos")
-			.setDesc("Show a sender's real profile picture in place of their initials. Needs a reconnect to grant the photo permission.")
-			.addToggle((t) =>
-				t.setValue(s.mailPhotos).onChange((v) => {
-					s.mailPhotos = v;
-					save();
-					this.plugin.notify();
-				})
-			);
-		help(
-			photoSt,
-			"Pictures come from your organization's directory, so colleagues have one and outside senders almost never do; anyone without falls back to the lettered circle. It needs the delegated ProfilePhoto.Read.All permission on the Azure app registration and a Reconnect on each account, and until then this quietly does nothing rather than erroring. Faces are fetched a few at a time as a list is drawn, cached, and kept in the disposable cache file so they are there the next time you open Obsidian."
-		);
-		new Setting(c)
-			.setName("Toolbars")
-			.setDesc("Which buttons the mail and calendar toolbars carry, and in what order. Anything left off still has its keyboard shortcut, right-click entry, and palette line.")
-			.addButton((b) =>
-				b.setButtonText("Mail").onClick(() => {
-					const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_MAIL)[0]?.view;
-					if (leaf instanceof MailView) leaf.openToolbarEditor();
-					else new Notice("Power Desk: open the inbox first, so the toolbar can redraw as you change it.");
-				})
-			)
-			.addButton((b) =>
-				b.setButtonText("Calendar").onClick(() => {
-					const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
-					if (leaf instanceof PowerCalendarView) leaf.openToolbarEditor();
-					else new Notice("Power Desk: open the calendar first, so the toolbar can redraw as you change it.");
-				})
-			);
-		const notifySt = new Setting(c)
-			.setName("Announce new mail")
-			.setDesc("A notice when mail arrives, and a desktop notification when Obsidian is not the window in front.")
-			.addDropdown((d) => {
-				d.addOption("off", "Never");
-				d.addOption("focused", "Focused only");
-				d.addOption("all", "Everything");
-				d.setValue(s.mailNotify).onChange((v) => {
-					s.mailNotify = v as "off" | "focused" | "all";
-					save();
-				});
-			});
-		help(
-			notifySt,
-			"Focused only follows Outlook's own verdict and stays quiet about the Other pile, which is usually what you want from a busy mailbox. Clicking a notice opens that message. Nothing is announced on the first check after Obsidian starts: the mail already in your inbox is not news, and mail that arrived while Obsidian was closed is not either. Read mail never announces itself, so a message you have already dealt with on your phone stays quiet here."
-		);
-		new Setting(c)
-			.setName("Unread count on the ribbon")
-			.setDesc("A red count on the mail icon down the side of the window.")
-			.addToggle((t) =>
-				t.setValue(s.mailBadge).onChange((v) => {
-					s.mailBadge = v;
-					save();
-					this.plugin.paintRibbonBadge();
-				})
-			);
-		const pollSt = new Setting(c)
-			.setName("Check for new mail")
-			.setDesc("How often an open mail view looks for new mail. Separate from the calendar's refresh, which is far slower on purpose.")
-			.addDropdown((d) => {
-				d.addOption("0", "With the calendar");
-				for (const [v, label] of [
-					["30", "Every 30 seconds"],
-					["60", "Every minute"],
-					["120", "Every 2 minutes"],
-					["300", "Every 5 minutes"],
-				])
-					d.addOption(v, label);
-				d.setValue(String(s.mailPollSeconds)).onChange((v) => {
-					s.mailPollSeconds = Number(v) || 0;
-					save();
-					this.plugin.mailCadenceChanged();
-				});
-			});
-		help(
-			pollSt,
-			"Mail syncs by delta, so a check that finds nothing is one small request per account and a minute is a comfortable cadence. Only what you are looking at is checked: the inbox lists, the folder tree's unread counts, and the folder currently open. Other folders you have visited refresh when you open them. The view also checks the moment you come back to the window or to the mail view, which is when stale mail is most obvious. This runs only while a mail view is open."
-		);
-		new Setting(c)
-			.setName("Full width")
-			.then((st) =>
-				help(
-					st,
-					"The panel button at the left of the mail and calendar headers folds the whole left sidebar away, so mail or the calendar has everything except the ribbon down the far edge. Clicking anything on the ribbon brings the sidebar back, so the window is never a mode you cannot leave, and the 'Focus mode' command does the same thing if you would rather bind a hotkey. Nothing else moves the layout: opening mail or the calendar leaves the workspace exactly as you had it, because a window that rearranges itself as you change tabs is unsettling however sensible each rearrangement is."
-				)
-			)
-			.setDesc("The panel button in the mail and calendar headers folds the left sidebar away and brings it back. Nothing else changes your layout.");
-		new Setting(c)
-			.setName("Categories")
-			.then((st) =>
-				help(
-					st,
-					"The mailbox's own category list, shared with Outlook and everything else that reads it. Make one, recolor one, delete one. There is no rename: Graph allows only the color to be changed once a category exists, so offering one would be offering a button that fails. Outlook appears to rename because it rewrites every message, event, and task carrying the old name at once. Deleting a category takes it off the list but leaves the label on messages that already have it."
-				)
-			)
-			.setDesc("Make, recolor, and delete the categories your mailbox offers. Renaming is not something the API allows; see the note in the dialog.")
-			.addButton((b) => b.setButtonText("Manage").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.plugin.notify()).open()));
-		new Setting(c)
-			.setName("Automatic replies")
-			.then((st) =>
-				help(
-					st,
-					"The out-of-office your mailbox sends, per account: on until you turn it off or between two times, with one message for colleagues and another for outsiders. The mailbox sends them, so they go whether or not Obsidian is open, and they are the same replies Outlook shows. While one is running, a band across the top of the inbox says so and offers to turn it off, which is the part that stops an away message answering for a fortnight after you got back."
-				)
-			)
-			.setDesc("Your out-of-office, set here and sent by the mailbox. A band across the inbox reminds you while one is running.")
-			.addButton((b) => b.setButtonText("Set up").onClick(() => new OutOfOfficeModal(this.app, this.plugin).open()));
-		new Setting(c)
-			.setName("Inbox rules")
-			.then((st) =>
-				help(
-					st,
-					"The same rules Outlook shows, edited here. They run in the mailbox rather than in Obsidian, so mail is filed whether or not this is open and on every device you read mail from. Power Desk offers a common subset of what a rule can do; a rule that also carries conditions or actions it cannot show says so, and keeps them untouched when you save."
-				)
-			)
-			.setDesc("Rules run in your mailbox, so they file mail while Obsidian is closed. These are the same rules Outlook shows.")
-			.addButton((b) => b.setButtonText("Manage rules").onClick(() => new RulesModal(this.app, this.plugin).open()));
-		const undoSt = new Setting(c)
-			.setName("Undo send")
-			.setDesc("Seconds a sent message is held so you can take it back. The compose window closes right away; the message leaves when the time is up.")
-			.addDropdown((d) => {
-				d.addOption("0", "Off");
-				for (const n of [5, 8, 10, 20, 30]) d.addOption(String(n), `${n} seconds`);
-				d.setValue(String(s.mailUndoSeconds)).onChange((v) => {
-					s.mailUndoSeconds = Number(v) || 0;
-					save();
-				});
-			});
-		help(
-			undoSt,
-			"Send closes the window immediately and a notice offers Undo for this long; taking it puts the window back exactly as it was, draft and all. The hold happens here rather than on the server, so a message still inside its window when Obsidian quits has not gone yet. Unloading the plugin or closing Obsidian normally lets anything waiting go, but a force quit cannot, which is why the choices are seconds rather than minutes. Off sends the instant you press Send."
-		);
-		new Setting(c)
-			.setName("Snooze folder")
-			.then((st) =>
-				help(
-					st,
-					"Snoozed mail is moved into a real folder in your mailbox and moved back to the inbox when its time comes, so it is visible and recoverable from Outlook or any other client rather than hidden inside this plugin. The folder is created the first time you snooze something. Graph has no server-side snooze, so the return leg runs here: a message due while Obsidian is closed comes back the next time you open it."
-				)
-			)
-			.setDesc("The mailbox folder snoozed mail waits in, created on first use. It returns to the inbox when its time comes and Obsidian is running.")
-			.addText((t) =>
-				t.setValue(s.mailSnoozeFolder).onChange((v) => {
-					s.mailSnoozeFolder = v;
-					save();
-				})
-			);
-		new Setting(c)
-			.setName("Row density")
-			.then((st) => help(st, "How much air each row in the message list gets. Compact fits the most on a screen, comfortable is the easiest to hit with a finger, cozy sits between them. This is spacing only; how many lines of preview text a row shows is the setting below."))
-			.setDesc("Spacing in the message list. Compact fits the most on a screen; comfortable gives each row the most room.")
-			.addDropdown((d) => {
-				d.addOption("compact", "Compact");
-				d.addOption("cozy", "Cozy");
-				d.addOption("comfortable", "Comfortable");
-				d.setValue(s.mailDensity).onChange((v) => {
-					s.mailDensity = v as "compact" | "cozy" | "comfortable";
-					save();
-					this.plugin.notify();
-				});
-			});
-		new Setting(c)
-			.setName("Message preview")
-			.then((st) =>
-				help(
-					st,
-					"How many lines of the message body sit under each row in the list, exactly Outlook's View > Message Preview. Off gives Outlook Classic's own two-line row, sender over subject, which fits about half again as many messages on a screen and is the fastest to scan once you know your mail."
-				)
-			)
-			.setDesc("Lines of body text under each message in the list. Off, the default, shows the sender and subject only, like Outlook Classic.")
-			.addDropdown((d) => {
-				d.addOption("0", "Off");
-				d.addOption("1", "1 line");
-				d.addOption("2", "2 lines");
-				d.addOption("3", "3 lines");
-				d.setValue(String(s.mailPreviewLines)).onChange((v) => {
-					s.mailPreviewLines = (Number(v) || 0) as 0 | 1 | 2 | 3;
-					save();
-					this.plugin.notify();
-				});
-			});
-		new Setting(c)
-			.setName("Capture orders and bills")
-			.then((st) => help(st, "Hands order confirmations and bills to Power Assistant on the refresh timer, which turns them into notes with the vendor, date, and line items filled in. Which messages qualify is decided by rules in Power Assistant's settings, and each match costs one AI call, so this stays off until you have set those rules up."))
-			.setDesc(
-				"Scan incoming mail on the refresh timer and hand order confirmations and bills to Power Assistant, which turns them into notes you can report on. Needs Power Assistant with a transactions folder set; the rules live in its settings. Each matching message costs one AI call."
-			)
-			.addToggle((t) =>
-				t.setValue(this.plugin.settings.txnScan).onChange((v) => {
-					this.plugin.settings.txnScan = v;
-					save();
-					if (v && !this.plugin.assistantTxn())
-						new Notice("Power Desk: Power Assistant is not set up for transactions yet. Set a transactions folder in its settings.", 9000);
-				})
-			);
-		new Setting(c)
-			.setName("Save attachments to")
-			.then((st) => help(st, "A folder outside the vault that an attachment's 'Save to folder' writes into. This is deliberately not a vault path: it is for files you want on the filesystem rather than in your notes. Empty uses your Downloads folder."))
-			.setDesc("The folder outside the vault that an attachment's 'Save to folder' writes into; empty uses your Downloads folder.")
-			.addText((t) =>
-				t.setValue(s.mailSaveFolder).onChange((v) => {
-					s.mailSaveFolder = v;
-					save();
-				})
-			);
-		const recSt = new Setting(c)
-			.setName("Ask for receipts by default")
-			.setDesc("Whether a new message starts with a read or delivery receipt requested. Either can be turned on for one message from Options in the compose window.")
-			.addToggle((t) =>
-				t.setValue(s.mailAskReadReceipt).onChange((v) => {
-					s.mailAskReadReceipt = v;
-					save();
-				})
-			)
-			.addToggle((t) =>
-				t.setValue(s.mailAskDeliveryReceipt).onChange((v) => {
-					s.mailAskDeliveryReceipt = v;
-					save();
-				})
-			);
-		help(
-			recSt,
-			"The first toggle asks the recipient's mail app to confirm they opened the message, the second asks their mail server to confirm it arrived. These are the standard mail fields Outlook sets, carried in the message headers: the recipient's own software decides whether to answer, and every serious one asks them first and lets them refuse. A receipt that never arrives therefore means nothing in particular, which is worth remembering before reading anything into silence. Both ship off, because asking everyone you write to confirm they read you is a decision per message rather than a habit to acquire quietly."
-		);
-		new Setting(c)
-			.setName("Signatures")
-			.then((st) =>
-				help(
-					st,
-					"As many signatures as you want, named, with each account choosing one for new messages and another for replies, since the full block belongs on a first message and rarely on the fourth reply of a thread. The editor is a real one: bold, italic, lists, links, and an image straight from the vault, so a logo goes in without hand-written HTML. A signature made before this existed was carried into the list automatically and is set on every account."
-				)
-			)
-			.setDesc("Named signatures, with a separate one for new messages and for replies, per account.")
-			.addButton((b) => b.setButtonText("Edit signatures").onClick(() => new SignaturesModal(this.app, this.plugin).open()));
-
-		section("Availability", "calendar");
-		intro("Copy free slots (command palette) reads this window and puts the next five workdays' open times on the clipboard, ready to paste into a mail.");
-		const fromSt = new Setting(c).setName("Free day starts")
-			.then((st) => help(st, "The earliest hour the free-slot finder will suggest. It never proposes a meeting before this, so an early calendar block does not turn into a breakfast invitation.")).setDesc(`${s.freeFromHour}:00`);
-		fromSt.addSlider((sl) =>
-			sl
-				.setLimits(5, 12, 1)
-				.setValue(s.freeFromHour)
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.freeFromHour = v;
-					fromSt.setDesc(`${v}:00`);
-					save();
-				})
-		);
-		const toSt = new Setting(c).setName("Free day ends")
-			.then((st) => help(st, "The latest hour the free-slot finder will suggest, so a gap late in the evening is not offered as availability.")).setDesc(`${s.freeToHour}:00`);
-		toSt.addSlider((sl) =>
-			sl
-				.setLimits(12, 22, 1)
-				.setValue(s.freeToHour)
-				.setDynamicTooltip()
-				.onChange((v) => {
-					s.freeToHour = v;
-					toSt.setDesc(`${v}:00`);
-					save();
-				})
-		);
-
-		section("Weather", "calendar");
-		intro("The sidebar agenda's day headers carry the forecast from Open-Meteo, a free service needing no account. Type a city and press Look up; clearing the city and looking up again switches weather off.");
-		let weatherQuery = s.weatherPlace;
-		const locSt = new Setting(c)
-			.setName("Location")
-			.then((st) => help(st, "The place the forecast is for. Type a town or city and pick from the suggestions; the coordinates are stored, so a renamed or ambiguous place stays resolved to the spot you chose."))
-			.setDesc(s.weatherLat.trim() ? `Forecast for ${s.weatherPlace || `${s.weatherLat}, ${s.weatherLon}`}.` : "A city name, like 'Chicago, IL' or 'Fort Wayne'.");
-		locSt.addText((t) => t.setValue(s.weatherPlace).onChange((v) => (weatherQuery = v)));
-		locSt.addButton((b) =>
-			b.setButtonText("Look up").setCta().onClick(async () => {
-				const q = weatherQuery.trim();
-				if (!q) {
-					s.weatherPlace = s.weatherLat = s.weatherLon = "";
-					this.plugin.clearWeather();
-					save();
-					this.display();
-					return;
-				}
-				const hit = await this.plugin.geocodePlace(q);
-				if (!hit) {
-					new Notice("Power Desk: no place with that name was found.");
-					return;
-				}
-				s.weatherPlace = hit.label;
-				s.weatherLat = hit.lat;
-				s.weatherLon = hit.lon;
-				this.plugin.clearWeather();
-				save();
-				this.display();
-				new Notice(`Power Desk: forecast set to ${hit.label}.`);
-			})
-		);
-		new Setting(c).setName("Unit")
-			.then((st) => help(st, "Whether the forecast shows Fahrenheit or Celsius.")).addDropdown((d) =>
-			d
-				.addOptions({ f: "Fahrenheit", c: "Celsius" })
-				.setValue(s.weatherUnit)
-				.onChange((v) => {
-					s.weatherUnit = v as "f" | "c";
-					this.plugin.clearWeather();
-					save();
-				})
-		);
-
-		/* ---------------- Notes ---------------- */
-
-		section("Event notes", "notes");
-		intro("Every event can carry a note in your vault: frontmatter for querying, attendees as links so people pages connect, and the body all yours.");
-		new Setting(c).setName("Notes folder")
-			.then((st) => help(st, "Where an event's linked note is created. Every event can carry one note, and they all land here so the folder doubles as a record of what happened when.")).addText((t) =>
-			t.setPlaceholder("Calendar").setValue(s.notesFolder).onChange((v) => {
-				s.notesFolder = v;
-				save();
-				this.plugin.notify();
-			})
-		);
-		const tmpl = new Setting(c).setName("Filename template").addText((t) =>
-			t.setPlaceholder("{{date}} {{title}}").setValue(s.noteNameTemplate).onChange((v) => {
-				s.noteNameTemplate = v;
-				save();
-				this.plugin.notify();
-			})
-		);
-		help(tmpl, "Tokens: {{date}} (2026-07-17), {{time}} (09.30, empty for all-day), {{title}}, {{calendar}}. The result is sanitized for the filesystem, so a title's slashes or colons cannot break the path.");
-		new Setting(c).setName("Open notes in a new tab")
-			.then((st) => help(st, "Whether opening an event's note replaces the current tab or opens beside it. On for keeping the calendar visible while you write.")).addToggle((t) =>
-			t.setValue(s.notesInNewTab).onChange((v) => {
-				s.notesInNewTab = v;
-				save();
-			})
-		);
-		const pplSt = new Setting(c).setName("People folder").setDesc("Where clicking an attendee lands. Empty borrows Power Assistant's People folder.");
-		help(pplSt, "Attendee and organizer names on an event card are links: click one to open that person's page, created on first visit. With Power Assistant installed these are the same pages its People hubs build on.");
-		pplSt.addText((t) =>
-			t.setPlaceholder(this.plugin.personFolderPath()).setValue(s.peopleFolder).onChange((v) => {
-				s.peopleFolder = v;
-				save();
-			})
-		);
-
-		/* ---------------- tab bar, search ---------------- */
-
-		const setVisible = (el: HTMLElement, v: boolean) => (el.style.display = v ? "" : "none");
-		const applyView = () => {
-			const q = this.query.trim().toLowerCase();
-			setVisible(tabBar, !q);
-			for (const sec of Array.from(body.children) as HTMLElement[]) {
-				const items = Array.from(sec.querySelectorAll(":scope > .setting-item:not(.setting-item-heading)")) as HTMLElement[];
-				if (!q) {
-					for (const it of items) setVisible(it, true);
-					setVisible(sec, sec.dataset.tab === this.activeTab);
-					continue;
-				}
-				// a heading-name match reveals the whole section; otherwise match each row
-				const nameHit = (sec.dataset.name ?? "").includes(q);
-				let anyHit = false;
-				for (const it of items) {
-					const name = it.querySelector(".setting-item-name")?.textContent?.toLowerCase() ?? "";
-					const desc = it.querySelector(".setting-item-description")?.textContent?.toLowerCase() ?? "";
-					const hit = nameHit || name.includes(q) || desc.includes(q);
-					setVisible(it, hit);
-					if (hit) anyHit = true;
-				}
-				setVisible(sec, anyHit);
+		mail.push(
+			{
+				name: "Unread filter keeps items unread",
+				help: "While the Unread filter is on in the Mail view, selecting a message never marks it read; only the explicit read buttons do. Exactly Outlook's 'always keep items unread' behavior for unread filtering.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.unreadFilterKeepsUnread).onChange((v) => {
+							s.unreadFilterKeepsUnread = v;
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Split the inbox",
+				desc: "Group the inbox into Priority, Focused, Notifications, and Other, the way Spark and Shortwave bundle a list. Folders you file into stay flat.",
+				help: "Priority is anything flagged or marked high importance. Focused and Other come from Outlook's own verdict, the same one the Focused Inbox uses, so it is trained on how you actually treat your mail rather than guessed here. Notifications is the one judgement this makes on its own: senders whose address is a machine's, like no-reply, notifications, or a ticketing or build system. A person mailing from one of those domains still reads as a person. It sits above Other because ticket and build mail is work. Sections fold shut and remember it, and the split applies to the unified list, an inbox, and Unread Mail; browsing a filing folder or Sent Items stays flat, and a search always does.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.mailSplitInbox).onChange((v) => {
+							s.mailSplitInbox = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Show as conversations",
+				desc: "Group a back-and-forth into one row that expands, like Outlook's Show as Conversations. Search results are never grouped.",
+				help: "A conversation collapses to a single row carrying everyone who wrote, the message count, and the marks off every message in it, so an attachment three replies down is still visible from the list. The twisty on the left opens it in place, and the reading pane lists the whole thread so you can walk it without going back. Ticking, archiving, or deleting a collapsed conversation takes all of it, which is what Outlook does. Search results stay ungrouped on purpose: a search asks about messages, and burying a match inside a collapsed thread would misreport what matched.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.mailConversations).onChange((v) => {
+							s.mailConversations = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Sender photos",
+				desc: "Show a sender's real profile picture in place of their initials. Needs a reconnect to grant the photo permission.",
+				help: "Pictures come from your organization's directory, so colleagues have one and outside senders almost never do; anyone without falls back to the lettered circle. It needs the delegated ProfilePhoto.Read.All permission on the Azure app registration and a Reconnect on each account, and until then this quietly does nothing rather than erroring. Faces are fetched a few at a time as a list is drawn, cached, and kept in the disposable cache file so they are there the next time you open Obsidian.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.mailPhotos).onChange((v) => {
+							s.mailPhotos = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Toolbars",
+				desc: "Which buttons the mail and calendar toolbars carry, and in what order. Anything left off still has its keyboard shortcut, right-click entry, and palette line.",
+				build: (st) => {
+					st.addButton((b) =>
+						b.setButtonText("Mail").onClick(() => {
+							const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_MAIL)[0]?.view;
+							if (leaf instanceof MailView) leaf.openToolbarEditor();
+							else new Notice("Power Desk: open the inbox first, so the toolbar can redraw as you change it.");
+						})
+					);
+					st.addButton((b) =>
+						b.setButtonText("Calendar").onClick(() => {
+							const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
+							if (leaf instanceof PowerCalendarView) leaf.openToolbarEditor();
+							else new Notice("Power Desk: open the calendar first, so the toolbar can redraw as you change it.");
+						})
+					);
+				},
+			},
+			{
+				name: "Announce new mail",
+				desc: "A notice when mail arrives, and a desktop notification when Obsidian is not the window in front.",
+				help: "Focused only follows Outlook's own verdict and stays quiet about the Other pile, which is usually what you want from a busy mailbox. Clicking a notice opens that message. Nothing is announced on the first check after Obsidian starts: the mail already in your inbox is not news, and mail that arrived while Obsidian was closed is not either. Read mail never announces itself, so a message you have already dealt with on your phone stays quiet here.",
+				build: (st) => {
+					st.addDropdown((d) => {
+						d.addOption("off", "Never");
+						d.addOption("focused", "Focused only");
+						d.addOption("all", "Everything");
+						d.setValue(s.mailNotify).onChange((v) => {
+							s.mailNotify = v as "off" | "focused" | "all";
+							save();
+						});
+					});
+				},
+			},
+			{
+				name: "Unread count on the ribbon",
+				desc: "A red count on the mail icon down the side of the window.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.mailBadge).onChange((v) => {
+							s.mailBadge = v;
+							save();
+							this.plugin.paintRibbonBadge();
+						})
+					);
+				},
+			},
+			{
+				name: "Check for new mail",
+				desc: "How often an open mail view looks for new mail. Separate from the calendar's refresh, which is far slower on purpose.",
+				help: "Mail syncs by delta, so a check that finds nothing is one small request per account and a minute is a comfortable cadence. Only what you are looking at is checked: the inbox lists, the folder tree's unread counts, and the folder currently open. Other folders you have visited refresh when you open them. The view also checks the moment you come back to the window or to the mail view, which is when stale mail is most obvious. This runs only while a mail view is open.",
+				build: (st) => {
+					st.addDropdown((d) => {
+						d.addOption("0", "With the calendar");
+						for (const [v, label] of [
+							["30", "Every 30 seconds"],
+							["60", "Every minute"],
+							["120", "Every 2 minutes"],
+							["300", "Every 5 minutes"],
+						])
+							d.addOption(v, label);
+						d.setValue(String(s.mailPollSeconds)).onChange((v) => {
+							s.mailPollSeconds = Number(v) || 0;
+							save();
+							this.plugin.mailCadenceChanged();
+						});
+					});
+				},
+			},
+			{
+				name: "Full width",
+				desc: "The panel button in the mail and calendar headers folds the left sidebar away and brings it back. Nothing else changes your layout.",
+				help: "The panel button at the left of the mail and calendar headers folds the whole left sidebar away, so mail or the calendar has everything except the ribbon down the far edge. Clicking anything on the ribbon brings the sidebar back, so the window is never a mode you cannot leave, and the 'Focus mode' command does the same thing if you would rather bind a hotkey. Nothing else moves the layout: opening mail or the calendar leaves the workspace exactly as you had it, because a window that rearranges itself as you change tabs is unsettling however sensible each rearrangement is.",
+			},
+			{
+				name: "Categories",
+				desc: "Make, recolor, and delete the categories your mailbox offers. Renaming is not something the API allows; see the note in the dialog.",
+				help: "The mailbox's own category list, shared with Outlook and everything else that reads it. Make one, recolor one, delete one. There is no rename: Graph allows only the color to be changed once a category exists, so offering one would be offering a button that fails. Outlook appears to rename because it rewrites every message, event, and task carrying the old name at once. Deleting a category takes it off the list but leaves the label on messages that already have it.",
+				build: (st) => {
+					st.addButton((b) => b.setButtonText("Manage").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.plugin.notify()).open()));
+				},
+			},
+			{
+				name: "Automatic replies",
+				desc: "Your out-of-office, set here and sent by the mailbox. A band across the inbox reminds you while one is running.",
+				help: "The out-of-office your mailbox sends, per account: on until you turn it off or between two times, with one message for colleagues and another for outsiders. The mailbox sends them, so they go whether or not Obsidian is open, and they are the same replies Outlook shows. While one is running, a band across the top of the inbox says so and offers to turn it off, which is the part that stops an away message answering for a fortnight after you got back.",
+				build: (st) => {
+					st.addButton((b) => b.setButtonText("Set up").onClick(() => new OutOfOfficeModal(this.app, this.plugin).open()));
+				},
+			},
+			{
+				name: "Inbox rules",
+				desc: "Rules run in your mailbox, so they file mail while Obsidian is closed. These are the same rules Outlook shows.",
+				help: "The same rules Outlook shows, edited here. They run in the mailbox rather than in Obsidian, so mail is filed whether or not this is open and on every device you read mail from. Power Desk offers a common subset of what a rule can do; a rule that also carries conditions or actions it cannot show says so, and keeps them untouched when you save.",
+				build: (st) => {
+					st.addButton((b) => b.setButtonText("Manage rules").onClick(() => new RulesModal(this.app, this.plugin).open()));
+				},
+			},
+			{
+				name: "Undo send",
+				desc: "Seconds a sent message is held so you can take it back. The compose window closes right away; the message leaves when the time is up.",
+				help: "Send closes the window immediately and a notice offers Undo for this long; taking it puts the window back exactly as it was, draft and all. The hold happens here rather than on the server, so a message still inside its window when Obsidian quits has not gone yet. Unloading the plugin or closing Obsidian normally lets anything waiting go, but a force quit cannot, which is why the choices are seconds rather than minutes. Off sends the instant you press Send.",
+				build: (st) => {
+					st.addDropdown((d) => {
+						d.addOption("0", "Off");
+						for (const n of [5, 8, 10, 20, 30]) d.addOption(String(n), `${n} seconds`);
+						d.setValue(String(s.mailUndoSeconds)).onChange((v) => {
+							s.mailUndoSeconds = Number(v) || 0;
+							save();
+						});
+					});
+				},
+			},
+			{
+				name: "Snooze folder",
+				desc: "The mailbox folder snoozed mail waits in, created on first use. It returns to the inbox when its time comes and Obsidian is running.",
+				help: "Snoozed mail is moved into a real folder in your mailbox and moved back to the inbox when its time comes, so it is visible and recoverable from Outlook or any other client rather than hidden inside this plugin. The folder is created the first time you snooze something. Graph has no server-side snooze, so the return leg runs here: a message due while Obsidian is closed comes back the next time you open it.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setValue(s.mailSnoozeFolder).onChange((v) => {
+							s.mailSnoozeFolder = v;
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Row density",
+				desc: "Spacing in the message list. Compact fits the most on a screen; comfortable gives each row the most room.",
+				help: "How much air each row in the message list gets. Compact fits the most on a screen, comfortable is the easiest to hit with a finger, cozy sits between them. This is spacing only; how many lines of preview text a row shows is the setting below.",
+				build: (st) => {
+					st.addDropdown((d) => {
+						d.addOption("compact", "Compact");
+						d.addOption("cozy", "Cozy");
+						d.addOption("comfortable", "Comfortable");
+						d.setValue(s.mailDensity).onChange((v) => {
+							s.mailDensity = v as "compact" | "cozy" | "comfortable";
+							save();
+							this.plugin.notify();
+						});
+					});
+				},
+			},
+			{
+				name: "Message preview",
+				desc: "Lines of body text under each message in the list. Off, the default, shows the sender and subject only, like Outlook Classic.",
+				help: "How many lines of the message body sit under each row in the list, exactly Outlook's View > Message Preview. Off gives Outlook Classic's own two-line row, sender over subject, which fits about half again as many messages on a screen and is the fastest to scan once you know your mail.",
+				build: (st) => {
+					st.addDropdown((d) => {
+						d.addOption("0", "Off");
+						d.addOption("1", "1 line");
+						d.addOption("2", "2 lines");
+						d.addOption("3", "3 lines");
+						d.setValue(String(s.mailPreviewLines)).onChange((v) => {
+							s.mailPreviewLines = (Number(v) || 0) as 0 | 1 | 2 | 3;
+							save();
+							this.plugin.notify();
+						});
+					});
+				},
+			},
+			{
+				name: "Capture orders and bills",
+				desc: "Scan incoming mail on the refresh timer and hand order confirmations and bills to Power Assistant, which turns them into notes you can report on. Needs Power Assistant with a transactions folder set; the rules live in its settings. Each matching message costs one AI call.",
+				help: "Hands order confirmations and bills to Power Assistant on the refresh timer, which turns them into notes with the vendor, date, and line items filled in. Which messages qualify is decided by rules in Power Assistant's settings, and each match costs one AI call, so this stays off until you have set those rules up.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(this.plugin.settings.txnScan).onChange((v) => {
+							this.plugin.settings.txnScan = v;
+							save();
+							if (v && !this.plugin.assistantTxn())
+								new Notice("Power Desk: Power Assistant is not set up for transactions yet. Set a transactions folder in its settings.", 9000);
+						})
+					);
+				},
+			},
+			{
+				name: "Save attachments to",
+				desc: "The folder outside the vault that an attachment's 'Save to folder' writes into; empty uses your Downloads folder.",
+				help: "A folder outside the vault that an attachment's 'Save to folder' writes into. This is deliberately not a vault path: it is for files you want on the filesystem rather than in your notes. Empty uses your Downloads folder.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setValue(s.mailSaveFolder).onChange((v) => {
+							s.mailSaveFolder = v;
+							save();
+						})
+					);
+				},
+			},
+			// One receipt per row. These were two unlabeled toggles sharing a row,
+			// which needed the help popover to say which was which; now each says so
+			// itself and, more to the point, each is findable by name in Obsidian's
+			// own settings search, where "delivery receipt" used to match nothing.
+			{
+				name: "Ask for a read receipt by default",
+				desc: "Asks the recipient's mail app to confirm they opened the message. Can still be set per message from Options in the compose window.",
+				aliases: ["receipts"],
+				help: "A standard mail field Outlook sets too, carried in the message headers: the recipient's own software decides whether to answer, and every serious one asks them first and lets them refuse. A receipt that never arrives therefore means nothing in particular, which is worth remembering before reading anything into silence. This ships off, because asking everyone you write to confirm they read you is a decision per message rather than a habit to acquire quietly.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.mailAskReadReceipt).onChange((v) => {
+							s.mailAskReadReceipt = v;
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Ask for a delivery receipt by default",
+				desc: "Asks the recipient's mail server to confirm the message arrived. Can still be set per message from Options in the compose window.",
+				aliases: ["receipts"],
+				help: "The companion to the read receipt above, and the same standard header field Outlook sets. The server at the other end decides whether to answer, so silence tells you nothing definite either way. It ships off for the same reason: asking for confirmation on everything you send is a decision per message rather than a habit to acquire quietly.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.mailAskDeliveryReceipt).onChange((v) => {
+							s.mailAskDeliveryReceipt = v;
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Signatures",
+				desc: "Named signatures, with a separate one for new messages and for replies, per account.",
+				help: "As many signatures as you want, named, with each account choosing one for new messages and another for replies, since the full block belongs on a first message and rarely on the fourth reply of a thread. The editor is a real one: bold, italic, lists, links, and an image straight from the vault, so a logo goes in without hand-written HTML. A signature made before this existed was carried into the list automatically and is set on every account.",
+				build: (st) => {
+					st.addButton((b) => b.setButtonText("Edit signatures").onClick(() => new SignaturesModal(this.app, this.plugin).open()));
+				},
 			}
-		};
+		);
 
-		for (const t of TABS) {
-			const btn = tabBar.createEl("button", { text: t.label, cls: "pcal-settings-tab" });
-			btn.toggleClass("is-active", t.id === this.activeTab);
-			btn.onclick = () => {
-				if (this.activeTab === t.id) return;
-				this.activeTab = t.id;
-				for (const other of Array.from(tabBar.children) as HTMLElement[]) other.toggleClass("is-active", other === btn);
-				applyView();
-			};
-		}
+		/* ---------------- Event notes ---------------- */
 
-		searchInput.addEventListener("input", () => {
-			this.query = searchInput.value;
-			applyView();
-		});
+		const notes: Row[] = [
+			intro("Every event can carry a note in your vault: frontmatter for querying, attendees as links so people pages connect, and the body all yours."),
+			{
+				name: "Notes folder",
+				help: "Where an event's linked note is created. Every event can carry one note, and they all land here so the folder doubles as a record of what happened when.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setPlaceholder("Calendar").setValue(s.notesFolder).onChange((v) => {
+							s.notesFolder = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Filename template",
+				help: "Tokens: {{date}} (2026-07-17), {{time}} (09.30, empty for all-day), {{title}}, {{calendar}}. The result is sanitized for the filesystem, so a title's slashes or colons cannot break the path.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setPlaceholder("{{date}} {{title}}").setValue(s.noteNameTemplate).onChange((v) => {
+							s.noteNameTemplate = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
+				name: "Open notes in a new tab",
+				help: "Whether opening an event's note replaces the current tab or opens beside it. On for keeping the calendar visible while you write.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.notesInNewTab).onChange((v) => {
+							s.notesInNewTab = v;
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "People folder",
+				desc: "Where clicking an attendee lands. Empty borrows Power Assistant's People folder.",
+				help: "Attendee and organizer names on an event card are links: click one to open that person's page, created on first visit. With Power Assistant installed these are the same pages its People hubs build on.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setPlaceholder(this.plugin.personFolderPath()).setValue(s.peopleFolder).onChange((v) => {
+							s.peopleFolder = v;
+							save();
+						})
+					);
+				},
+			},
+		];
 
-		applyView();
+		return [
+			{
+				id: "microsoft",
+				label: "Microsoft 365",
+				groups: [
+					{ heading: "Microsoft 365 accounts", rows: graphAccounts },
+					{ heading: "Microsoft 365 app", rows: graphApp },
+				],
+			},
+			{
+				id: "google",
+				label: "Google",
+				groups: [
+					{ heading: "Google accounts", rows: googleAccounts },
+					{ heading: "Google app", rows: googleApp },
+				],
+			},
+			{ id: "caldav", label: "CalDAV", groups: [{ heading: "CalDAV accounts", rows: caldav }] },
+			{ id: "ics", label: "ICS feeds", groups: [{ heading: "ICS feeds", rows: ics }] },
+			{ id: "vault", label: "Vault notes", groups: [{ heading: "Vault notes", rows: vault }] },
+			{
+				id: "calendar",
+				label: "Calendar",
+				groups: [
+					{ heading: "Views", rows: views },
+					{ heading: "Refresh", rows: refreshRows },
+					{ heading: "Availability", rows: availability },
+					{ heading: "Weather", rows: weather },
+				],
+			},
+			{ id: "mail", label: "Mail", groups: [{ heading: "Mail", rows: mail }] },
+			{ id: "notes", label: "Notes", groups: [{ heading: "Event notes", rows: notes }] },
+		];
 	}
 }

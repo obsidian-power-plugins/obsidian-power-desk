@@ -4318,7 +4318,52 @@ button.pcal-card-more .svg-icon {
 	padding: 2px 2px 4px;
 }
 
-/* ---------------- settings: search, tabs, help ---------------- */
+/* ---------------- settings: masthead, search, tabs, help ---------------- */
+
+/* what this plugin is and which build is running, above everything else. On
+   1.13 it is a setting row emptied of its own furniture; in the fallback it is
+   a plain div, hence the extra padding there. */
+.pcal-about {
+	display: block;
+}
+
+.pcal-about-standalone {
+	padding: 2px 0 12px;
+}
+
+.pcal-about-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.pcal-about-name {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.pcal-about-version {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	background: var(--background-modifier-hover);
+	border-radius: 4px;
+	padding: 1px 6px;
+}
+
+.pcal-about-desc {
+	margin-top: 4px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+/* a source list is one setting row owning a container of its own, so the row
+   has to stop being a flex line with an info column and become a plain block
+   for the account rows inside it to stack the way they did as siblings */
+.pcal-list-host {
+	display: block;
+	padding: 0;
+	border-top: none;
+}
 
 .pcal-settings-search {
 	margin: 4px 0 10px;
