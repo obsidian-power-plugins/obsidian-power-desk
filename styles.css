@@ -185,10 +185,20 @@
 	opacity: 0.4;
 }
 
-/* multi-selected rows wear a soft accent wash until an action lands */
+/* Multi-selected rows wear a soft accent wash until an action lands. The wash
+   carries the selection on its own, the way Outlook does it: a ring around each
+   row boxes every pick separately, so a run of adjacent ones reads as a stack of
+   outlines with doubled lines between them instead of one block. Worse, the ring
+   only showed up once the rows were marked read, since the unread bar below is a
+   box-shadow too and the later rule won outright. */
 .pcal-mail-row.is-multisel {
 	background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary));
-	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+
+/* and inside a run the separator goes as well, so the block is continuous. The
+   last row of the run keeps its line against whatever follows it. */
+.pcal-mail-row.is-multisel:has(+ .pcal-mail-row.is-multisel) {
+	border-bottom-color: transparent;
 }
 
 .pcal-mail-header button.pcal-mail-tool {
