@@ -617,7 +617,7 @@ const DEFAULT_SETTINGS: PCSettings = {
 	mailNotify: "focused",
 	mailBadge: true,
 	// Outlook's own order, which is what the hands already know
-	mailToolbar: ["delete", "report", "reply", "replyAll", "forward", "readUnread", "categorize", "flag", "snooze", "move", "archive", "makeEvent", "saveToNote"],
+	mailToolbar: ["delete", "report", "reply", "replyAll", "forward", "readUnread", "categorize", "flag", "snooze", "move", "archive", "makeEvent", "saveToNote", "print"],
 	calendarToolbar: ["filter", "refresh", "findEvent", "freeSlots", "print"],
 	toolbarAdded: [],
 	mailPhotos: true,
@@ -2440,7 +2440,23 @@ export default class PowerDeskPlugin extends Plugin {
 			await this.mailboxGate(a.id, async () => {
 				if (folderId === UNREAD_FOLDER) {
 					const raw = await fetchUnreadMessages(await this.graphTokenFor(a));
-					st.messages = raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
+					const fresh = raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
+					// This folder is a question the mailbox answers afresh every
+					// time, so a message you have just read is simply not in the
+					// answer. Replacing the list wholesale would delete that row
+					// a moment after you marked it, leaving nothing to mark
+					// unread again; the ones you touched yourself keep their
+					// place until a refresh you actually asked for.
+					const ids = new Set(fresh.map((m) => m.id));
+					const kept = st.messages.filter((m) => this.recentlyMarked.has(m.id) && !ids.has(m.id));
+					// a mark still in flight means the mailbox can answer with the
+					// old state; what you did wins over what it has not heard yet,
+					// so a row does not go bold again for a moment
+					for (const m of fresh) {
+						const read = this.recentlyMarked.get(m.id);
+						if (read !== undefined) m.unread = !read;
+					}
+					st.messages = [...fresh, ...kept].sort((x, y) => y.receivedMs - x.receivedMs);
 				} else {
 					await this.syncList(a, folderId, st);
 				}
@@ -2781,6 +2797,14 @@ export default class PowerDeskPlugin extends Plugin {
 		return out;
 	}
 
+	/** Refresh because someone asked for one, rather than because a timer
+	 *  fired. That difference matters: this is the moment the lists are
+	 *  allowed to forget what you marked and show what the mailbox says. */
+	userRefreshMail() {
+		this.recentlyMarked.clear();
+		this.refreshMailAll(true);
+	}
+
 	/** The timer's one entry point: inboxes, trees, and any folder being viewed. */
 	refreshMailAll(force: boolean) {
 		this.ensureMail(force);
@@ -2905,9 +2929,21 @@ export default class PowerDeskPlugin extends Plugin {
 		}
 	}
 
+	/** Messages whose read state you changed yourself.
+	 *
+	 *  An unread-only list would otherwise drop a message the instant you
+	 *  marked it read, which is the one moment you might want to change your
+	 *  mind about it. These keep their place until the list is genuinely
+	 *  reloaded. */
+	readonly recentlyMarked = new Map<string, boolean>();
+
 	async setMailRead(m: PCMail, read: boolean) {
 		const a = this.accountById(m.accountId);
 		if (!a) return;
+		this.recentlyMarked.set(m.id, read);
+		// bounded, because nothing clears it on a session where you never
+		// refresh and never change folder
+		if (this.recentlyMarked.size > 300) this.recentlyMarked.delete(this.recentlyMarked.keys().next().value as string);
 		for (const list of this.cachedMailLists(a.id)) {
 			const cached = list.messages.find((x) => x.id === m.id);
 			if (cached) cached.unread = !read;
@@ -4173,6 +4209,15 @@ export default class PowerDeskPlugin extends Plugin {
 				get: () => this.settings.calendarToolbar,
 				set: (v) => (this.settings.calendarToolbar = v),
 			},
+			// one Print on the mail toolbar, not two: the window it opens
+			// carries both styles, so a second button would only be a longer
+			// way to the same place
+			{
+				key: "mail:print",
+				id: "print",
+				get: () => this.settings.mailToolbar,
+				set: (v) => (this.settings.mailToolbar = v),
+			},
 		];
 		let changed = false;
 		for (const o of offers) {
@@ -5084,7 +5129,7 @@ class MailView extends ItemView {
 		out.push({ label: "Journal", terms: "day activity diary daily note", run: () => new JournalModal(this.app, this.plugin).open() });
 		out.push({ label: "Folders", terms: "manage tree mark all read hidden", run: () => this.plugin.openFolders() });
 		out.push({ label: "Shortcuts", terms: "favourites favorites jump launcher", run: () => this.plugin.openShortcuts() });
-		out.push({ label: "Refresh", terms: "sync fetch", run: () => this.plugin.refreshMailAll(true) });
+		out.push({ label: "Refresh", terms: "sync fetch", run: () => this.plugin.userRefreshMail() });
 		if (Platform.isDesktopApp) out.push({ label: "Print the list", hint: `${this.lastList.length} shown`, terms: "table paper pdf", run: () => this.printList() });
 
 		// actions that need something open only exist when something is
@@ -5496,7 +5541,7 @@ class MailView extends ItemView {
 		advBtn.addEventListener("click", () => this.openSearchWindow());
 		this.refreshBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Refresh" } });
 		setIcon(this.refreshBtn, "refresh-cw");
-		this.refreshBtn.addEventListener("click", () => this.plugin.refreshMailAll(true));
+		this.refreshBtn.addEventListener("click", () => this.plugin.userRefreshMail());
 		this.oooEl = root.createDiv("pcal-mail-ooo-bar");
 		this.oooEl.hide();
 		this.searchRowEl = root.createDiv("pcal-mail-searchrow");
@@ -5734,7 +5779,10 @@ class MailView extends ItemView {
 	 *  than a layout. Nothing here is only here: every action also has a
 	 *  shortcut, a right-click entry, or a palette line, so a toolbar trimmed
 	 *  to four buttons loses no capability. */
-	private toolActions(): { id: string; label: string; icon: string; many: boolean; run: (targets: PCMail[]) => void }[] {
+	/** `solo` marks an action that needs no message at all: it acts on the list
+	 *  or opens a window of its own, so demanding a selection first would only
+	 *  be a rule with nothing behind it. */
+	private toolActions(): { id: string; label: string; icon: string; many: boolean; solo?: boolean; run: (targets: PCMail[]) => void }[] {
 		const one = (targets: PCMail[]): PCMail | null => {
 			if (targets.length > 1) {
 				new Notice("Power Desk: this works on a single message; pick just one.");
@@ -5796,13 +5844,13 @@ class MailView extends ItemView {
 				id: "print",
 				label: "Print",
 				icon: "printer",
-				many: false,
-				run: (t) => {
-					const m = one(t);
-					if (m) void this.printMessage(m);
-				},
+				many: true,
+				solo: true,
+				// the window carries both styles, so one message opens on the
+				// memo and a selection of several (or none) opens on the table
+				run: (t) => void this.openPrintWindow(t.length === 1 ? "memo" : "table", t.length === 1 ? t[0] : null),
 			},
-			{ id: "printList", label: "Print the list", icon: "table", many: true, run: () => this.printList() },
+			{ id: "printList", label: "Print the list", icon: "table", many: true, solo: true, run: () => this.printList() },
 			{ id: "people", label: "People", icon: "users", many: true, run: () => this.plugin.openPeople() },
 			{ id: "tasks", label: "Tasks", icon: "check-square", many: true, run: () => this.plugin.openTasks() },
 			{ id: "notes", label: "Notes", icon: pickIcon("sticky-note", "file-text"), many: true, run: () => new NotesModal(this.app, this.plugin).open() },
@@ -5884,13 +5932,13 @@ class MailView extends ItemView {
 			b.createSpan({ cls: "pcal-mail-tool-label", text: a.label });
 			b.addEventListener("click", () => {
 				const targets = this.multiTargets();
-				if (!targets.length) {
+				if (!targets.length && !a.solo) {
 					new Notice("Power Desk: select a message first.");
 					return;
 				}
 				a.run(targets);
 			});
-			this.mailToolBtns.push(b);
+			if (!a.solo) this.mailToolBtns.push(b);
 		}
 		const more = host.createEl("button", { cls: "pcal-icon-btn pcal-mail-tool-more", attr: { "aria-label": "Customize the toolbar" } });
 		setIcon(more, "settings-2");
@@ -6138,6 +6186,9 @@ class MailView extends ItemView {
 		if (this.folderSel) this.plugin.ensureFolderMail(this.folderSel.accountId, this.folderSel.folderId, true);
 	}
 
+	/** Which list was on screen last render, so a change of list can be seen. */
+	private lastListKey: string | null = null;
+
 	private autoReadSuppressed(): boolean {
 		const s = this.plugin.settings;
 		return (s.mailUnreadOnly || this.folderSel?.folderId === UNREAD_FOLDER) && s.unreadFilterKeepsUnread;
@@ -6181,6 +6232,14 @@ class MailView extends ItemView {
 		const sel = this.folderSel;
 		if (sel && !this.plugin.accountById(sel.accountId)) this.folderSel = null;
 		const search = this.plugin.mailSearchState();
+		// leaving a list ends the reprieve its rows were given: the exemption
+		// exists so a row does not vanish under your hand, not so a read
+		// message follows you into every list you open afterwards
+		const listKey = search ? `search:${search.query}` : this.folderSel ? `${this.folderSel.accountId}:${this.folderSel.folderId}` : "all";
+		if (listKey !== this.lastListKey) {
+			if (this.lastListKey != null) this.plugin.recentlyMarked.clear();
+			this.lastListKey = listKey;
+		}
 		// the title says what was actually searched, because "5 results" over
 		// a local index and over the whole mailbox are different claims
 		const scopeLabel = search ? (search.inFlight ? "searching the mailbox" : search.scope === "local" ? `${search.results.length} here` : `${search.results.length} in the mailbox`) : "";
@@ -6192,7 +6251,7 @@ class MailView extends ItemView {
 		const source = search ? search.results : this.folderSel ? this.plugin.folderMail(this.folderSel.accountId, this.folderSel.folderId) : this.plugin.allMail();
 		// the unread filter keeps the currently open message visible even once
 		// it reads, so it cannot vanish mid-read
-		const mail = source.filter((m) => !s.mailUnreadOnly || m.unread || m.id === this.selected?.id);
+		const mail = source.filter((m) => !s.mailUnreadOnly || m.unread || m.id === this.selected?.id || this.plugin.recentlyMarked.has(m.id));
 		// a screenful and then some, not eight: one $batch carries twenty, so
 		// covering what you can see costs about the same as covering a third
 		// of it, and the ninth message down was the one that felt slow
