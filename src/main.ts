@@ -3462,6 +3462,17 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  panes side by side into one, because a fixed width on the container
 	 *  is a fixed width for both of them together. Obsidian remembers its own
 	 *  layout perfectly well; the job here is only to shut it and open it. */
+	/** Told when the fold changes, so the copy of the button in the tab you are
+	 *  not on stops claiming otherwise. Deliberately not the redraw listeners:
+	 *  nothing drawn depends on this, and repainting every row is what made
+	 *  the toggle feel like it had hung. */
+	private focusWatchers = new Set<() => void>();
+
+	watchFocus(fn: () => void): () => void {
+		this.focusWatchers.add(fn);
+		return () => this.focusWatchers.delete(fn);
+	}
+
 	toggleFocus(on?: boolean) {
 		const want = on ?? !this.pagesHidden;
 		const left = this.app.workspace.leftSplit;
@@ -3469,6 +3480,7 @@ export default class PowerDeskPlugin extends Plugin {
 		if (want) left.collapse();
 		else left.expand();
 		this.pagesHidden = want;
+		for (const fn of this.focusWatchers) fn();
 		// deliberately no notify(): nothing drawn depends on this, and a
 		// repaint of every row is what made the toggle feel like it hung.
 		// The button that was clicked updates its own state.
@@ -6181,7 +6193,10 @@ class MailView extends ItemView {
 		// the unread filter keeps the currently open message visible even once
 		// it reads, so it cannot vanish mid-read
 		const mail = source.filter((m) => !s.mailUnreadOnly || m.unread || m.id === this.selected?.id);
-		void this.plugin.prefetchBodies(mail.slice(0, 8));
+		// a screenful and then some, not eight: one $batch carries twenty, so
+		// covering what you can see costs about the same as covering a third
+		// of it, and the ninth message down was the one that felt slow
+		void this.plugin.prefetchBodies(mail.slice(0, 25));
 		// entering a folder points the reading pane at its first message, so
 		// the body beside the list always belongs to it; a selection already
 		// in the list stays put, the phone drill has no pane to match, and a
@@ -7066,7 +7081,10 @@ class MailView extends ItemView {
 				}, Math.max(1, s.markReadSeconds) * 1000);
 			}
 		}
-		this.render();
+		// the phone's drill moves between screens, which is a real layout
+		// change; on a desktop the list is unchanged and only two classes and
+		// the reading pane move
+		if (this.drill || !this.paintSelection()) this.render();
 		// whatever you read next is almost always next in the list, so warm
 		// the way you are travelling while this one is on screen
 		this.warmNeighbors(m);
@@ -7099,6 +7117,22 @@ class MailView extends ItemView {
 				}
 			}
 		}
+	}
+
+	/** Move the selection without rebuilding the list.
+	 *
+	 *  A click changes one class on two rows and the contents of the reading
+	 *  pane. The full render also rebuilds the folder tree, every row, every
+	 *  avatar and every badge, which on a real mailbox is thousands of nodes
+	 *  thrown away and made again to say "this one now". False when the rows
+	 *  on screen no longer line up with the list they were built from, which
+	 *  is the one case that does need the real thing. */
+	private paintSelection(): boolean {
+		const rows = this.listEl?.querySelectorAll(".pcal-mail-row");
+		if (!rows || rows.length !== this.lastList.length) return false;
+		for (let i = 0; i < rows.length; i++) (rows[i] as HTMLElement).toggleClass("is-selected", this.lastList[i].id === this.selected?.id);
+		this.renderReading();
+		return true;
 	}
 
 	/** Both views carry this button, and one of them is always the tab you are
@@ -10188,6 +10222,7 @@ class PowerCalendarView extends ItemView {
 		root.empty();
 		root.addClass("pcal-root");
 
+		const header = root.createDiv("pcal-header");
 		// first in the row and the same glyph as the mail view's, because it is
 		// the same button doing the same thing to the same sidebar: a control
 		// that moves depending on which tab you are on is a different control
