@@ -138,7 +138,7 @@ import {
 	wallOfMs,
 	weekDays,
 	workWeekDays,
-} from "./core";
+} from "../src/core";
 
 let failures = 0;
 function eq(a: unknown, b: unknown, msg: string) {
@@ -1532,7 +1532,7 @@ eq(dedupePeople(undefined, ["Ana"]), ["Ana"], "no organizer, no dedupe");
 }
 
 // --- ics.ts: parsing and recurrence expansion ---
-import { parseIcsEvents } from "./ics";
+import { parseIcsEvents } from "../src/ics";
 
 const SRC = { sourceId: "feed", calendarName: "Feed", color: "#123456" };
 const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//pc-test//EN", ...lines, "END:VCALENDAR"].join("\r\n");
@@ -1894,7 +1894,7 @@ eq(parseAgendaBlock("date: 2026-07-20"), { date: "2026-07-20", days: 1 }, "a fix
 eq(parseAgendaBlock("days: 99\nnonsense line"), { date: null, days: 31 }, "days clamp and junk is ignored");
 
 // --- caldavxml.ts ---
-import { buildCalendarQuery, firstTag, hasEmptyTag, parseCalendarData, parseCollections, parseHomeSet, parsePrincipal, resolveHref, toBasicUtc, xmlUnescape } from "./caldavxml";
+import { buildCalendarQuery, firstTag, hasEmptyTag, parseCalendarData, parseCollections, parseHomeSet, parsePrincipal, resolveHref, toBasicUtc, xmlUnescape } from "../src/caldavxml";
 
 eq(resolveHref("https://caldav.icloud.com", "/123/principal/"), "https://caldav.icloud.com/123/principal/", "dav: root-relative href takes the origin");
 eq(resolveHref("https://x.com/dav/", "cal1/"), "https://x.com/dav/cal1/", "dav: relative href appends to the base");
@@ -1967,7 +1967,7 @@ END:VCALENDAR</cal:calendar-data>
 // --- Graph $batch: chunking and reply parsing ---
 {
 	const ok = (cond: unknown, msg: string) => eq(!!cond, true, msg);
-	const { chunk, GRAPH_BATCH_MAX, buildMessageBatch, parseMessageBatch } = require("./core");
+	const { chunk, GRAPH_BATCH_MAX, buildMessageBatch, parseMessageBatch } = require("../src/core");
 
 	// -- chunk --
 	eq(chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]], "chunk splits into runs and keeps the remainder");
