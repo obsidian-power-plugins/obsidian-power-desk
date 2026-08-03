@@ -4540,3 +4540,33 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	color: var(--text-muted);
 	white-space: pre-wrap;
 }
+
+/* A pane the user has dragged to a width of their own. The width itself is
+   measured and stays inline; this only stops the pane flexing back to the
+   default. Doubled selector so it also outranks the drill-mode rules. */
+.pcal-mail-folders.pcal-pane-sized,
+.pcal-mail-listwrap.pcal-pane-sized {
+	flex: 0 0 auto;
+}
+
+/* Folder tree insets. Nested rows compute their own padding from 6 + depth * 14
+   and keep it inline; these are the rows whose depth the code already knows, so
+   they carry it as a class instead. Doubled selector to beat the padding
+   shorthand on .pcal-folder-row. */
+.pcal-folder-row.pcal-depth-0 {
+	padding-left: 6px;
+}
+
+.pcal-folder-row.pcal-depth-1 {
+	padding-left: 20px;
+}
+
+/* a favorite the user has nested under the one above it */
+.pcal-fav-row.pcal-fav-indent {
+	padding-left: 24px;
+}
+
+/* The file picker exists only to open the OS dialog; it is never seen. */
+.pcal-offscreen-input {
+	display: none;
+}

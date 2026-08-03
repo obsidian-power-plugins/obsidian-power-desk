@@ -5714,14 +5714,14 @@ class MailView extends ItemView {
 			if (!el) return;
 			const saved = Number(store.loadLocalStorage(storeKey) ?? 0);
 			if (saved >= min && saved <= max) {
-				pane.style.flex = "0 0 auto";
+				pane.addClass("pcal-pane-sized");
 				pane.style.width = `${saved}px`;
 			}
 			el.addEventListener("pointerdown", (e) => {
 				e.preventDefault();
 				const startX = e.clientX;
 				const startW = pane.getBoundingClientRect().width;
-				pane.style.flex = "0 0 auto";
+				pane.addClass("pcal-pane-sized");
 				const move = (ev: PointerEvent) => {
 					pane.style.width = `${Math.min(max, Math.max(min, startW + (ev.clientX - startX)))}px`;
 				};
@@ -6737,7 +6737,7 @@ class MailView extends ItemView {
 				const name = fav.name?.trim() || realName;
 				const count = isUnread ? this.plugin.unreadSubtreeCount(acc) : this.plugin.folderUnreadRollup(acc.id, fav.folderId);
 				const row = host.createDiv("pcal-folder-row pcal-fav-row");
-				if (fav.indent) row.style.paddingLeft = "24px";
+				row.toggleClass("pcal-fav-indent", !!fav.indent);
 				row.toggleClass("is-selected", this.folderSel?.accountId === acc.id && this.folderSel?.folderId === fav.folderId);
 				// favorites are the folders filed into most, so they take a
 				// dropped message too. Unread Mail is a search, not a place.
@@ -6947,7 +6947,7 @@ class MailView extends ItemView {
 			const hidden = this.plugin.settings.mailHiddenFolders.filter((h) => h.accountId === a.id);
 			if (hidden.length) {
 				const hr = host.createDiv("pcal-folder-row pcal-folder-hiddenrow");
-				hr.style.paddingLeft = "6px";
+				hr.addClass("pcal-depth-0");
 				hr.createSpan("pcal-folder-twist");
 				const hic = hr.createSpan("pcal-folder-ic");
 				setIcon(hic, "eye-off");
@@ -6973,7 +6973,7 @@ class MailView extends ItemView {
 			const searchKey = `search:${a.id}`;
 			const searchCollapsed = collapsed.has(searchKey);
 			const shead = host.createDiv("pcal-folder-row pcal-folder-searchroot");
-			shead.style.paddingLeft = "6px"; // the tree's depth-0 inset
+			shead.addClass("pcal-depth-0");
 			const stw = shead.createSpan("pcal-folder-twist");
 			setIcon(stw, searchCollapsed ? "chevron-right" : "chevron-down");
 			const sic = shead.createSpan("pcal-folder-ic");
@@ -6982,7 +6982,7 @@ class MailView extends ItemView {
 			shead.addEventListener("click", () => toggleCollapse(searchKey));
 			if (searchCollapsed) continue;
 			const unreadRow = host.createDiv("pcal-folder-row pcal-folder-unread");
-			unreadRow.style.paddingLeft = "20px"; // the tree's depth-1 inset
+			unreadRow.addClass("pcal-depth-1");
 			unreadRow.toggleClass("is-selected", this.folderSel?.accountId === a.id && this.folderSel?.folderId === UNREAD_FOLDER);
 			unreadRow.createSpan("pcal-folder-twist"); // the empty chevron slot every tree row keeps
 			const uic = unreadRow.createSpan("pcal-folder-ic");
@@ -7006,7 +7006,7 @@ class MailView extends ItemView {
 			});
 			for (const sf of this.plugin.settings.mailSearchFolders.filter((x) => x.accountId === a.id)) {
 				const row = host.createDiv("pcal-folder-row");
-				row.style.paddingLeft = "20px";
+				row.addClass("pcal-depth-1");
 				row.createSpan("pcal-folder-twist");
 				const ic = row.createSpan("pcal-folder-ic");
 				setIcon(ic, "search");
@@ -7032,7 +7032,7 @@ class MailView extends ItemView {
 				});
 			}
 			const addSearch = host.createDiv("pcal-folder-row pcal-folder-addsearch");
-			addSearch.style.paddingLeft = "20px";
+			addSearch.addClass("pcal-depth-1");
 			addSearch.createSpan("pcal-folder-twist");
 			const asIc = addSearch.createSpan("pcal-folder-ic");
 			setIcon(asIc, "plus");
@@ -12470,7 +12470,7 @@ class RichComposeModal extends Modal {
 	 *  the desktop app and on a phone. */
 	private pickDiskFiles() {
 		const input = createEl("input", { attr: { type: "file", multiple: "true" } });
-		input.style.display = "none";
+		input.addClass("pcal-offscreen-input");
 		document.body.appendChild(input);
 		input.addEventListener("change", () => {
 			void (async () => {
