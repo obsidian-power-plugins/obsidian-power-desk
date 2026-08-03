@@ -467,6 +467,16 @@ export interface PCMail {
 	flagged?: boolean;
 	/** Addressed to the account directly (on the To line, not just Cc). */
 	toMe?: boolean;
+	/** Outlook categories on the message, by display name. */
+	categories?: string[];
+	/** Outlook's own Focused verdict for the message. Absent on anything
+	 *  cached before the split inbox shipped, which counts as focused so
+	 *  nothing quietly disappears into a lower section. */
+	focused?: boolean;
+	/** The Graph conversation this belongs to, when the fetch carried one.
+	 *  Messages cached before threading shipped have none, which simply makes
+	 *  each of them a conversation of one until the next refresh. */
+	conversationId?: string;
 }
 
 export interface GraphMailLike {
@@ -482,6 +492,9 @@ export interface GraphMailLike {
 	importance?: string;
 	flag?: { flagStatus?: string };
 	toRecipients?: { emailAddress?: { address?: string } }[];
+	conversationId?: string;
+	inferenceClassification?: string;
+	categories?: string[];
 }
 
 /** One Graph inbox message to a PCMail; null when unreadable. `ownAddress`
@@ -507,7 +520,1230 @@ export function graphMailToPC(m: GraphMailLike, accountId: string, accountLabel:
 		priority: m.importance === "high" || undefined,
 		flagged: m.flag?.flagStatus === "flagged" || undefined,
 		toMe: (own && (m.toRecipients ?? []).some((r) => (r.emailAddress?.address ?? "").toLowerCase() === own)) || undefined,
+		conversationId: m.conversationId || undefined,
+		focused: m.inferenceClassification ? m.inferenceClassification === "focused" : undefined,
+		categories: m.categories?.length ? m.categories : undefined,
 	};
+}
+
+/* ---------- printing ---------- */
+
+export interface PrintOptions {
+	/** Body size in points; the whole document scales from it. */
+	fontPt?: number;
+	landscape?: boolean;
+}
+
+/** The @page rule for a printable document, so orientation and margins are
+ *  decided in one place rather than in four stylesheets. */
+export function pageRule(o: PrintOptions | undefined, defaultLandscape: boolean, marginMm: number): string {
+	const landscape = o?.landscape ?? defaultLandscape;
+	return `@page { ${landscape ? "size: landscape; " : ""}margin: ${marginMm}mm; }`;
+}
+
+/** Sizes as a scale rather than a point value, because the right size for a
+ *  message is not the right size for a month grid: each style keeps its own
+ *  base and the scale moves it. "Normal" is exactly what printed before any
+ *  of this existed. */
+export const PRINT_SCALES = [
+	{ id: "xs", label: "Smallest", factor: 0.75 },
+	{ id: "s", label: "Smaller", factor: 0.875 },
+	{ id: "m", label: "Normal", factor: 1 },
+	{ id: "l", label: "Larger", factor: 1.15 },
+	{ id: "xl", label: "Largest", factor: 1.35 },
+] as const;
+
+export type PrintScaleId = (typeof PRINT_SCALES)[number]["id"];
+
+/** A style's base size moved by one of the scale steps, to a tenth of a point
+ *  so the stylesheet never carries a number nobody can read. */
+export function scaledPt(basePt: number, scale: string): number {
+	const f = PRINT_SCALES.find((s) => s.id === scale)?.factor ?? 1;
+	return Math.round(basePt * f * 10) / 10;
+}
+
+const escHtml = (s: string) => (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** A message as a standalone document to hand a printer.
+ *
+ *  Built as its own page rather than printing the window, because printing
+ *  the window prints Obsidian: the sidebar, the folder tree, the message
+ *  list, and a sliver of the mail. The header fields are escaped even though
+ *  they came from a mailbox, since a subject is attacker-controlled text and
+ *  this is the one place it stops being data and becomes markup. The body is
+ *  already sanitized by the caller and goes in whole. */
+export function printableHtml(m: { subject: string; from: string; to: string; date: string; bodyHtml: string; plain?: boolean }, o?: PrintOptions): string {
+	const body = m.plain ? `<pre class="plain">${escHtml(m.bodyHtml)}</pre>` : m.bodyHtml;
+	const row = (label: string, value: string) => (value ? `<tr><th>${escHtml(label)}</th><td>${escHtml(value)}</td></tr>` : "");
+	return `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(m.subject)}</title><style>
+:root { color-scheme: light; }
+body { margin: 0; padding: 24px; background: #fff; color: #111;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: ${o?.fontPt ?? 12}pt; line-height: 1.45; }
+h1 { font-size: 16pt; margin: 0 0 12px; }
+table.head { border-collapse: collapse; margin: 0 0 16px; }
+table.head th { text-align: left; padding: 1px 12px 1px 0; font-weight: 600; color: #555; vertical-align: top; white-space: nowrap; }
+table.head td { padding: 1px 0; }
+hr { border: 0; border-top: 1px solid #ccc; margin: 0 0 16px; }
+img { max-width: 100%; height: auto; }
+pre.plain { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: inherit; margin: 0; }
+table { max-width: 100%; }
+a { color: #0645ad; }
+${pageRule(o, false, 14)}
+</style></head><body>
+<h1>${escHtml(m.subject)}</h1>
+<table class="head">${row("From", m.from)}${row("To", m.to)}${row("Date", m.date)}</table>
+<hr>
+${body}
+</body></html>`;
+}
+
+export interface PrintDay {
+	heading: string;
+	events: { when: string; title: string; where?: string }[];
+}
+
+/** A stretch of calendar as an agenda, Outlook's Calendar Details style.
+ *
+ *  A list rather than a reproduction of the timed grid: a grid printed at
+ *  page width turns an hour into four millimetres and a day of meetings into
+ *  a smear, while the list says what is actually happening and reads at arm's
+ *  length. Empty days are kept, because "nothing on Thursday" is information. */
+export function printableAgendaHtml(title: string, days: readonly PrintDay[], o?: PrintOptions): string {
+	const rows = days
+		.map((d) => {
+			const evs = d.events.length
+				? d.events
+						.map((e) => `<tr><td class="nw t">${escHtml(e.when)}</td><td>${escHtml(e.title)}${e.where ? `<div class="where">${escHtml(e.where)}</div>` : ""}</td></tr>`)
+						.join("")
+				: `<tr><td class="nw t"></td><td class="none">Nothing scheduled</td></tr>`;
+			return `<tr><th colspan="2" class="day">${escHtml(d.heading)}</th></tr>${evs}`;
+		})
+		.join("");
+	return `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(title)}</title><style>
+:root { color-scheme: light; }
+body { margin: 0; padding: 20px; background: #fff; color: #111;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: ${o?.fontPt ?? 10.5}pt; }
+h1 { font-size: 15pt; margin: 0 0 14px; }
+table { border-collapse: collapse; width: 100%; }
+th.day { text-align: left; font-size: 10pt; padding: 12px 0 3px; border-bottom: 1.5px solid #999; }
+td { padding: 3px 8px 3px 0; border-bottom: 1px solid #eee; vertical-align: top; }
+td.t { width: 130px; color: #444; }
+td.nw { white-space: nowrap; }
+td.none { color: #888; font-style: italic; }
+div.where { color: #666; font-size: 9pt; }
+tr { page-break-inside: avoid; }
+${pageRule(o, false, 13)}
+</style></head><body>
+<h1>${escHtml(title)}</h1>
+<table>${rows}</table>
+</body></html>`;
+}
+
+export interface PrintCell {
+	label: string;
+	dim: boolean;
+	events: { when: string; title: string }[];
+}
+
+/** A month as the grid it is on screen. Landscape by default, because a
+ *  seven-column month squeezed into portrait is unreadable and the printer
+ *  should be told rather than left to guess. */
+export function printableMonthHtml(title: string, weekdays: readonly string[], weeks: readonly (readonly PrintCell[])[], o?: PrintOptions): string {
+	const head = weekdays.map((d) => `<th>${escHtml(d)}</th>`).join("");
+	const body = weeks
+		.map(
+			(w) =>
+				`<tr>${w
+					.map(
+						(c) =>
+							`<td class="${c.dim ? "dim" : ""}"><div class="num">${escHtml(c.label)}</div>${c.events
+								.map((e) => `<div class="ev"><span class="t">${escHtml(e.when)}</span> ${escHtml(e.title)}</div>`)
+								.join("")}</td>`
+					)
+					.join("")}</tr>`
+		)
+		.join("");
+	return `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(title)}</title><style>
+:root { color-scheme: light; }
+body { margin: 0; padding: 14px; background: #fff; color: #111;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: ${o?.fontPt ?? 8.5}pt; }
+h1 { font-size: 14pt; margin: 0 0 8px; }
+table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+th { border: 1px solid #999; padding: 3px; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.03em; background: #f2f2f2; }
+td { border: 1px solid #bbb; padding: 3px; height: 92px; vertical-align: top; overflow: hidden; }
+td.dim { background: #fafafa; color: #999; }
+div.num { font-weight: 700; font-size: 9pt; margin-bottom: 2px; }
+div.ev { line-height: 1.25; margin-bottom: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+div.ev span.t { color: #555; }
+tr { page-break-inside: avoid; }
+${pageRule(o, true, 10)}
+</style></head><body>
+<h1>${escHtml(title)}</h1>
+<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+</body></html>`;
+}
+
+/** A message list as a table, Outlook's other print style.
+ *
+ *  Prints what is on screen, in the order it is on screen, so a filtered or
+ *  sorted list prints as the thing you were looking at rather than as some
+ *  other list built fresh. Every cell is escaped: these are subjects and
+ *  sender names, which is to say text other people wrote. */
+export function printableTableHtml(title: string, rows: readonly { from: string; subject: string; date: string; folder?: string }[], o?: PrintOptions): string {
+	const cells = rows
+		.map(
+			(r) =>
+				`<tr><td>${escHtml(r.from)}</td><td>${escHtml(r.subject)}</td><td class="nw">${escHtml(r.date)}</td><td>${escHtml(r.folder ?? "")}</td></tr>`
+		)
+		.join("");
+	return `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(title)}</title><style>
+:root { color-scheme: light; }
+body { margin: 0; padding: 20px; background: #fff; color: #111;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: ${o?.fontPt ?? 10}pt; }
+h1 { font-size: 14pt; margin: 0 0 4px; }
+p.count { margin: 0 0 14px; color: #555; font-size: 9pt; }
+table { border-collapse: collapse; width: 100%; }
+th { text-align: left; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.03em; color: #555;
+  border-bottom: 1.5px solid #999; padding: 4px 8px 4px 0; }
+td { padding: 4px 8px 4px 0; border-bottom: 1px solid #ddd; vertical-align: top; }
+td.nw { white-space: nowrap; }
+/* a long table should not lose its headings on page two */
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; }
+${pageRule(o, false, 12)}
+</style></head><body>
+<h1>${escHtml(title)}</h1>
+<p class="count">${rows.length} message${rows.length === 1 ? "" : "s"}</p>
+<table><thead><tr><th>From</th><th>Subject</th><th>Received</th><th>Folder</th></tr></thead><tbody>${cells}</tbody></table>
+</body></html>`;
+}
+
+/* ---------- signatures ---------- */
+
+export interface MailSignature {
+	id: string;
+	name: string;
+	html: string;
+}
+
+export interface SignatureUse {
+	accountId: string;
+	newId: string;
+	replyId: string;
+}
+
+/** The signature to put on a message: the one this account uses for this
+ *  kind of message, or nothing. An id that no longer names a signature
+ *  resolves to nothing rather than to some other signature, because sending
+ *  the wrong one is worse than sending none. */
+export function signatureFor(sigs: readonly MailSignature[], use: readonly SignatureUse[], accountId: string, kind: "new" | "reply"): MailSignature | null {
+	const u = use.find((x) => x.accountId === accountId);
+	if (!u) return null;
+	const id = kind === "new" ? u.newId : u.replyId;
+	if (!id) return null;
+	return sigs.find((s) => s.id === id) ?? null;
+}
+
+export interface InlineImage {
+	cid: string;
+	name: string;
+	contentType: string;
+	base64: string;
+}
+
+/** Pull data-url images out of outgoing HTML and point it at attachments.
+ *
+ *  A logo pasted into a signature lives as a data url while it is being
+ *  edited, which is convenient and self-contained. Sent that way, though,
+ *  Outlook and Gmail both refuse to render it: mail clients have blocked
+ *  data-url images for years because they were an obvious tracking and
+ *  payload dodge. The fix is what every mail client does, which is to send
+ *  the bytes as an inline attachment and reference it by content id. */
+export function extractInlineImages(html: string, idSeed: string): { html: string; images: InlineImage[] } {
+	const images: InlineImage[] = [];
+	let n = 0;
+	const out = html.replace(/src\s*=\s*(["'])data:([^;]+);base64,([^"']+)\1/gi, (_all, quote: string, mime: string, b64: string) => {
+		n++;
+		const cid = `pd-${idSeed}-${n}`;
+		const ext = mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
+		images.push({ cid, name: `image${n}.${ext}`, contentType: mime, base64: b64 });
+		return `src=${quote}cid:${cid}${quote}`;
+	});
+	return { html: out, images };
+}
+
+/** Carry a single old signature into the named list, once.
+ *
+ *  Returns null when there is nothing to do, which is the common case: this
+ *  runs on every load and must be silent unless it genuinely has an old
+ *  signature and no new ones to convert. */
+export function migrateSignature(oldHtml: string, sigs: readonly MailSignature[], accountIds: readonly string[], newId: string): { sigs: MailSignature[]; use: SignatureUse[] } | null {
+	if (!oldHtml.trim() || sigs.length) return null;
+	const sig = { id: newId, name: "Signature", html: oldHtml };
+	return { sigs: [sig], use: accountIds.map((accountId) => ({ accountId, newId, replyId: newId })) };
+}
+
+/* ---------- new mail ---------- */
+
+/** Which of a freshly synced list is worth announcing.
+ *
+ *  Three guards, and each exists because of a way this gets embarrassing:
+ *  the baseline stops a first sync announcing a thousand old messages as if
+ *  they just landed; the already-told set stops the same message arriving
+ *  twice when a later sync returns it again; and read mail is never
+ *  announced, because a message already read somewhere else is not news.
+ *  Newest last, so the loudest notice is the most recent. */
+export function newArrivals(messages: readonly PCMail[], baselineMs: number, told: ReadonlySet<string>, focusedOnly: boolean): PCMail[] {
+	return messages
+		.filter((m) => m.receivedMs > baselineMs && !told.has(m.id) && m.unread && (!focusedOnly || m.focused !== false))
+		.sort((a, b) => a.receivedMs - b.receivedMs);
+}
+
+/** How a batch of arrivals reads in one line. */
+export function arrivalSummary(arrivals: readonly PCMail[]): { title: string; body: string } {
+	if (arrivals.length === 1) return { title: arrivals[0].from, body: arrivals[0].subject };
+	const senders: string[] = [];
+	for (const m of arrivals) if (!senders.includes(m.from)) senders.push(m.from);
+	const who = senders.length <= 3 ? senders.join(", ") : `${senders.slice(0, 2).join(", ")} and ${senders.length - 2} others`;
+	return { title: `${arrivals.length} new messages`, body: who };
+}
+
+/* ---------- the split inbox ---------- */
+
+export type SectionKey = "priority" | "focused" | "notifications" | "other";
+
+export interface MailSection {
+	key: SectionKey;
+	label: string;
+	messages: PCMail[];
+}
+
+// prettier-ignore
+const AUTOMATED_LOCAL = /^(no-?reply|do-?not-?reply|donotreply|notifications?|notify|alerts?|automated|automation|auto|system|sysadmin|mailer-daemon|postmaster|bounces?|jira|confluence|atlassian|github|gitlab|bitbucket|jenkins|builds?|ci|cd|monitoring|nagios|pagerduty|helpdesk|support-?bot|ticket|tickets)([.\-_+]|$)/i;
+
+/** Whether an address is a machine rather than a person.
+ *
+ *  Only the local part is read, and only against names that are conventions
+ *  rather than guesses: no-reply, notifications, the ticketing and build
+ *  systems. A person at any of those domains still reads as a person, which
+ *  matters because real colleagues mail from github.com and atlassian.net
+ *  addresses all day. */
+export function automatedSender(address: string): boolean {
+	const local = (address ?? "").split("@")[0]?.trim();
+	if (!local) return false;
+	if (/no-?reply/i.test(local)) return true;
+	return AUTOMATED_LOCAL.test(local);
+}
+
+/** Which section a message belongs in.
+ *
+ *  Three of the four tests read something Microsoft or the sender actually
+ *  set rather than anything guessed here: the follow-up flag, the high
+ *  importance mark, and Outlook's own Focused verdict, which is trained on
+ *  how this mailbox actually behaves. Only Notifications is a heuristic, and
+ *  it is a narrow one. A message with no verdict counts as focused, so mail
+ *  cached before this shipped stays where the eye expects it. */
+export function sectionOf(m: PCMail): SectionKey {
+	if (m.flagged || m.priority) return "priority";
+	if (automatedSender(m.fromAddress)) return "notifications";
+	return m.focused === false ? "other" : "focused";
+}
+
+const SECTION_LABELS: Record<SectionKey, string> = {
+	priority: "Priority",
+	focused: "Focused",
+	notifications: "Notifications",
+	other: "Other",
+};
+
+/** A list split into its sections, in reading order, empty ones dropped.
+ *
+ *  Notifications sits above Other on purpose: ticket and build mail is work,
+ *  and burying it under everything Outlook deprioritized would hide the part
+ *  of the automated mail that actually needs answering. Order within a
+ *  section is the order it arrived in, so whatever sorted the list still
+ *  decides. */
+export function splitSections(messages: PCMail[]): MailSection[] {
+	const order: SectionKey[] = ["priority", "focused", "notifications", "other"];
+	const buckets = new Map<SectionKey, PCMail[]>(order.map((k) => [k, []]));
+	for (const m of messages) buckets.get(sectionOf(m))?.push(m);
+	return order.filter((k) => (buckets.get(k) ?? []).length).map((k) => ({ key: k, label: SECTION_LABELS[k], messages: buckets.get(k) ?? [] }));
+}
+
+/* ---------- automatic replies ---------- */
+
+/** Graph's dateTimeTimeZone with both halves present, which is what a
+ *  setting written from here always has. The event mapper's own
+ *  GraphDateTime is the same shape read loosely, since incoming events can
+ *  be missing either half. */
+export interface WhenSetting {
+	dateTime: string;
+	timeZone: string;
+}
+
+/** An instant as Graph's dateTimeTimeZone, always in UTC.
+ *
+ *  Exchange accepts a wall time paired with a zone name, but which zone
+ *  spellings it takes is a swamp (Windows names, some IANA, not others), and
+ *  getting it wrong means an auto-reply that starts at the wrong hour and
+ *  says nothing about it. UTC is the one spelling nothing argues with, so
+ *  the local time the user picked is converted here and sent absolute. */
+export function toGraphDateTime(ms: number): WhenSetting {
+	return { dateTime: new Date(ms).toISOString().slice(0, 19), timeZone: "UTC" };
+}
+
+/** Back the other way, for showing what the mailbox already has.
+ *
+ *  A UTC value is exact. Anything else is read as a wall time in whatever
+ *  zone this machine is in, which is the best available guess and is right
+ *  whenever the setting was made on a machine in the same zone. */
+export function fromGraphDateTime(v: WhenSetting | undefined | null): number | null {
+	const raw = (v?.dateTime ?? "").trim();
+	if (!raw) return null;
+	const zone = (v?.timeZone ?? "").trim().toUpperCase();
+	// trim Graph's seven-digit fraction, which Date cannot read
+	const base = raw.replace(/(\.\d{3})\d+$/, "$1").replace(/Z$/i, "");
+	const ms = Date.parse(zone === "UTC" || zone === "GMT" ? `${base}Z` : base);
+	return Number.isFinite(ms) ? ms : null;
+}
+
+/* ---------- categories ---------- */
+
+/** Outlook's twenty-five category colors, in Graph's own order.
+ *
+ *  Graph hands back the name of a slot ("preset7") rather than a color, so
+ *  the palette has to live somewhere, and it may as well be somewhere
+ *  testable. The order is Outlook's: the light half first, then the dark. */
+// prettier-ignore
+const CATEGORY_PRESETS = [
+	"#e74856", "#ff8c00", "#c19c00", "#ffd700", "#57a300", "#00b294", "#8cbd18", "#0078d4",
+	"#8764b8", "#c30052", "#69797e", "#4a5459", "#7a7574", "#5d5a58", "#1f1f1f", "#a4262c",
+	"#d13438", "#6e4b1e", "#986f0b", "#0b6a0b", "#005e50", "#4c6b0f", "#003966", "#5c2e91",
+	"#93003f",
+];
+
+/** Outlook's own names for the twenty-five colors, so a color picker offers
+ *  "Blue" rather than "preset7". */
+// prettier-ignore
+export const CATEGORY_COLOR_NAMES = [
+	"Red", "Orange", "Brown", "Yellow", "Green", "Teal", "Olive", "Blue",
+	"Purple", "Cranberry", "Steel", "Dark steel", "Gray", "Dark gray", "Black", "Dark red",
+	"Dark orange", "Dark brown", "Dark yellow", "Dark green", "Dark teal", "Dark olive", "Dark blue", "Dark purple",
+	"Dark cranberry",
+];
+
+/** The color behind a category, or a neutral gray when the mailbox gave a
+ *  slot name nothing is known about. A category with no color set at all
+ *  reads as "none" in Graph, which is a real state and not an error. */
+export function categoryColor(preset: string): string {
+	const m = /^preset(\d+)$/i.exec((preset ?? "").trim());
+	if (!m) return "#8a8886";
+	return CATEGORY_PRESETS[Number(m[1])] ?? "#8a8886";
+}
+
+/** Add or remove one category from a message's list, case-insensitively,
+ *  keeping the order the mailbox had. Graph stores categories by their
+ *  display name, so the comparison is on names and duplicates only differing
+ *  in case would be two categories in Outlook's eyes as well. */
+export function toggleCategory(current: string[] | undefined, name: string): string[] {
+	const have = current ?? [];
+	const hit = have.some((c) => c.toLowerCase() === name.toLowerCase());
+	return hit ? have.filter((c) => c.toLowerCase() !== name.toLowerCase()) : [...have, name];
+}
+
+/* ---------- shortcuts ---------- */
+
+export interface Shortcut {
+	id: string;
+	/** Which group it sits in; empty means the unnamed first group. */
+	group: string;
+	label: string;
+	kind: "folder" | "search" | "note" | "url";
+	/** A folder's account, for the folder kind only. */
+	accountId?: string;
+	/** The folder id, the query, the vault path, or the address. */
+	target: string;
+}
+
+/** Shortcuts arranged into their groups, in the order they were made.
+ *
+ *  A group appears where its first member does, so moving a shortcut to the
+ *  top moves its group there too, which is what someone rearranging a list
+ *  by hand expects. The unnamed group leads, since that is where anything
+ *  added without thinking about groups lands. */
+export function groupShortcuts(list: readonly Shortcut[]): { name: string; items: Shortcut[] }[] {
+	const out: { name: string; items: Shortcut[] }[] = [];
+	for (const s of list) {
+		const name = s.group.trim();
+		const hit = out.find((g) => g.name === name);
+		if (hit) hit.items.push(s);
+		else out.push({ name, items: [s] });
+	}
+	return out.sort((a, b) => (a.name === "" ? -1 : b.name === "" ? 1 : 0));
+}
+
+/** What a shortcut is called when nothing was typed: the thing itself,
+ *  shortened enough to sit in a list. */
+export function defaultShortcutLabel(kind: Shortcut["kind"], target: string): string {
+	if (kind === "note") return target.replace(/\.md$/i, "").split("/").pop() || target;
+	if (kind === "url") return target.replace(/^https?:\/\//i, "").replace(/\/$/, "").slice(0, 60);
+	if (kind === "search") return target.slice(0, 60);
+	return target.slice(0, 40);
+}
+
+/* ---------- journal ---------- */
+
+export interface JournalDay {
+	key: string;
+	meetings: { when: string; title: string; who: string }[];
+	received: { when: string; who: string; subject: string }[];
+	sent: { when: string; who: string; subject: string }[];
+	notes: { title: string }[];
+}
+
+/** A day's activity, which is what Outlook's Journal was for before it was
+ *  retired: what you sat in, who wrote to you, and what you sent.
+ *
+ *  Declined meetings are left out because you did not attend them, and an
+ *  all-day event is listed without a time because it did not happen at one. */
+export function buildJournal(
+	key: string,
+	events: readonly PCEvent[],
+	received: readonly PCMail[],
+	sent: readonly PCMail[],
+	notes: readonly { title: string; changedMs: number }[],
+	use24h: boolean
+): JournalDay {
+	const from = msOfKey(key);
+	const to = from + 86400000;
+	const inDay = (ms: number) => ms >= from && ms < to;
+	const t = (ms: number) => fmtTimeOfMs(ms, use24h, true);
+	return {
+		key,
+		meetings: events
+			.filter((ev) => !ev.declined && eventsOnDay([ev], key).length)
+			.sort((a, b) => a.startMs - b.startMs)
+			.map((ev) => ({ when: ev.allDay ? "All day" : t(ev.startMs), title: ev.title, who: (ev.attendees ?? []).slice(0, 4).join(", ") })),
+		received: received
+			.filter((m) => inDay(m.receivedMs))
+			.sort((a, b) => a.receivedMs - b.receivedMs)
+			.map((m) => ({ when: t(m.receivedMs), who: m.from, subject: m.subject })),
+		sent: sent
+			.filter((m) => inDay(m.receivedMs))
+			.sort((a, b) => a.receivedMs - b.receivedMs)
+			.map((m) => ({ when: t(m.receivedMs), who: m.from, subject: m.subject })),
+		notes: notes.filter((n) => inDay(n.changedMs)).map((n) => ({ title: n.title })),
+	};
+}
+
+/** A day as markdown, for pasting into a daily note. Sections with nothing
+ *  in them are left out rather than printed empty, since a heading with
+ *  nothing under it is worse than no heading. */
+export function journalMarkdown(d: JournalDay): string {
+	const out: string[] = [`## ${fmtDayHeading(d.key)}`];
+	const section = (title: string, lines: string[]) => {
+		if (!lines.length) return;
+		out.push("", `### ${title}`, ...lines);
+	};
+	section(
+		"Meetings",
+		d.meetings.map((m) => `- **${m.when}** ${m.title}${m.who ? ` with ${m.who}` : ""}`)
+	);
+	section(
+		"Sent",
+		d.sent.map((m) => `- **${m.when}** ${m.subject}`)
+	);
+	section(
+		"Received",
+		d.received.map((m) => `- **${m.when}** ${m.who}: ${m.subject}`)
+	);
+	section(
+		"Notes",
+		d.notes.map((n) => `- ${n.title}`)
+	);
+	if (out.length === 1) out.push("", "_Nothing recorded._");
+	return out.join("\n") + "\n";
+}
+
+/* ---------- calendar search ---------- */
+
+export interface EventQuery {
+	words: string;
+	title: string;
+	people: string;
+	location: string;
+	/** A source key, or empty for every calendar. */
+	calendar: string;
+	onlineOnly: boolean;
+	allDayOnly: boolean;
+	withPeopleOnly: boolean;
+}
+
+/** Events matching a search, soonest first.
+ *
+ *  Every text field is an AND of its words, so "quarterly review" narrows
+ *  rather than widening, and each is matched against the part of the event it
+ *  names: `title` against the title alone, `people` against organizer and
+ *  attendees, `words` against all of it including the description. Matching
+ *  is case-blind, since nobody types a meeting's capitals from memory. */
+export function matchEvents(events: readonly PCEvent[], q: EventQuery): PCEvent[] {
+	const words = (s: string) =>
+		s
+			.toLowerCase()
+			.split(/\s+/)
+			.filter(Boolean);
+	const all = words(q.words);
+	const inTitle = words(q.title);
+	const inWho = words(q.people);
+	const inWhere = words(q.location);
+
+	return events
+		.filter((ev) => {
+			if (q.calendar && ev.sourceId !== q.calendar) return false;
+			if (q.onlineOnly && !ev.joinUrl) return false;
+			if (q.allDayOnly && !ev.allDay) return false;
+			const people = [ev.organizer ?? "", ...(ev.attendees ?? []), ...(ev.attendeeDetail ?? []).map((a) => `${a.name ?? ""} ${a.email ?? ""}`)].join(" ").toLowerCase();
+			if (q.withPeopleOnly && !(ev.attendees ?? []).length) return false;
+			const title = (ev.title ?? "").toLowerCase();
+			const where = (ev.location ?? "").toLowerCase();
+			const everything = `${title} ${where} ${people} ${(ev.description ?? "").toLowerCase()} ${(ev.calendarName ?? "").toLowerCase()}`;
+			if (!all.every((w) => everything.includes(w))) return false;
+			if (!inTitle.every((w) => title.includes(w))) return false;
+			if (!inWho.every((w) => people.includes(w))) return false;
+			if (!inWhere.every((w) => where.includes(w))) return false;
+			return true;
+		})
+		.sort((a, b) => a.startMs - b.startMs);
+}
+
+/** Whether a search asks anything at all, so an empty dialog does not offer
+ *  to list a year of calendar as if it were a result. */
+export function eventQueryIsEmpty(q: EventQuery): boolean {
+	return !q.words.trim() && !q.title.trim() && !q.people.trim() && !q.location.trim() && !q.calendar && !q.onlineOnly && !q.allDayOnly && !q.withPeopleOnly;
+}
+
+/* ---------- unsubscribe ---------- */
+
+export interface UnsubscribeInfo {
+	/** An https link the sender says accepts a one-click POST (RFC 8058).
+	 *  Only set when the List-Unsubscribe-Post header vouches for it. */
+	oneClickUrl?: string;
+	/** An https link to open in a browser and finish by hand. */
+	webUrl?: string;
+	/** An address that unsubscribes you when mailed. */
+	mailto?: { to: string; subject: string; body: string };
+}
+
+/** Read the unsubscribe headers a bulk sender is required to set.
+ *
+ *  List-Unsubscribe (RFC 2369) is a comma-separated list of URIs in angle
+ *  brackets, any mix of mailto: and https:. List-Unsubscribe-Post (RFC 8058)
+ *  is the sender promising the https one will accept a plain POST, which is
+ *  what makes a one-click unsubscribe possible without opening a page.
+ *
+ *  Nothing here is trusted enough to act on by itself: these values are
+ *  written by whoever sent the mail, so the caller shows the destination and
+ *  asks before anything is opened, posted, or sent. */
+export function parseUnsubscribe(headers: { name?: string; value?: string }[] | undefined): UnsubscribeInfo | null {
+	if (!headers?.length) return null;
+	const find = (want: string) => headers.find((h) => (h.name ?? "").toLowerCase() === want)?.value ?? "";
+	const raw = find("list-unsubscribe");
+	if (!raw.trim()) return null;
+	const oneClick = /list-unsubscribe\s*=\s*one-click/i.test(find("list-unsubscribe-post"));
+	const out: UnsubscribeInfo = {};
+	for (const m of raw.matchAll(/<([^>]+)>/g)) {
+		const uri = m[1].trim();
+		if (/^https?:\/\//i.test(uri)) {
+			if (!out.webUrl) out.webUrl = uri;
+			if (oneClick && !out.oneClickUrl) out.oneClickUrl = uri;
+		} else if (/^mailto:/i.test(uri) && !out.mailto) {
+			const rest = uri.slice(7);
+			const q = rest.indexOf("?");
+			const to = (q < 0 ? rest : rest.slice(0, q)).trim();
+			if (!to.includes("@")) continue;
+			const params = new URLSearchParams(q < 0 ? "" : rest.slice(q + 1));
+			out.mailto = { to, subject: params.get("subject") ?? "unsubscribe", body: params.get("body") ?? "unsubscribe" };
+		}
+	}
+	return out.oneClickUrl || out.webUrl || out.mailto ? out : null;
+}
+
+/** How an unsubscribe will actually be carried out, in plain words, so the
+ *  confirmation says what is about to happen rather than just "unsubscribe". */
+export function unsubscribePlan(u: UnsubscribeInfo): { kind: "post" | "open" | "mail"; target: string } {
+	if (u.oneClickUrl) return { kind: "post", target: u.oneClickUrl };
+	if (u.webUrl) return { kind: "open", target: u.webUrl };
+	return { kind: "mail", target: u.mailto?.to ?? "" };
+}
+
+/* ---------- inbox rules ---------- */
+
+/** The parts of a rule this plugin offers to edit. Outlook can set a great
+ *  deal more, which is exactly why this is a named subset rather than a
+ *  pretence at the whole thing. */
+export interface RuleEdit {
+	name: string;
+	enabled: boolean;
+	fromContains: string;
+	subjectContains: string;
+	bodyContains: string;
+	toContains: string;
+	hasAttachments: boolean;
+	highImportance: boolean;
+	moveToFolderId: string;
+	markAsRead: boolean;
+	markImportance: "" | "low" | "normal" | "high";
+	deleteIt: boolean;
+	stopProcessing: boolean;
+}
+
+export const EMPTY_RULE: RuleEdit = {
+	name: "",
+	enabled: true,
+	fromContains: "",
+	subjectContains: "",
+	bodyContains: "",
+	toContains: "",
+	hasAttachments: false,
+	highImportance: false,
+	moveToFolderId: "",
+	markAsRead: false,
+	markImportance: "",
+	deleteIt: false,
+	stopProcessing: false,
+};
+
+/** Comma-separated text to the string list Graph wants, and back. */
+const listOf = (s: string): string[] =>
+	s
+		.split(/[,;]+/)
+		.map((x) => x.trim())
+		.filter(Boolean);
+const textOf = (v: unknown): string => (Array.isArray(v) ? (v as unknown[]).map(String).join(", ") : "");
+
+/** A stored rule read back into the editable subset. */
+export function ruleToEdit(r: { displayName: string; isEnabled: boolean; conditions: Record<string, unknown>; actions: Record<string, unknown> }): RuleEdit {
+	const c = r.conditions ?? {};
+	const a = r.actions ?? {};
+	return {
+		name: r.displayName,
+		enabled: r.isEnabled,
+		fromContains: textOf(c.senderContains),
+		subjectContains: textOf(c.subjectContains),
+		bodyContains: textOf(c.bodyContains),
+		toContains: textOf(c.recipientContains),
+		hasAttachments: c.hasAttachments === true,
+		highImportance: c.importance === "high",
+		moveToFolderId: typeof a.moveToFolder === "string" ? a.moveToFolder : "",
+		markAsRead: a.markAsRead === true,
+		markImportance: a.markImportance === "low" || a.markImportance === "normal" || a.markImportance === "high" ? a.markImportance : "",
+		deleteIt: a.delete === true,
+		stopProcessing: a.stopProcessingRules === true,
+	};
+}
+
+/** An edit folded back into a rule body for Graph.
+ *
+ *  The existing conditions and actions are carried through and only the
+ *  managed keys are overwritten, because PATCH replaces these objects whole.
+ *  Without the merge, editing a rule Outlook made would silently drop every
+ *  condition this plugin does not model, which is the kind of data loss you
+ *  would not notice until the mail stopped being filed. A managed field left
+ *  empty deletes its key rather than writing an empty value, since Graph
+ *  treats an empty list as a condition that matches nothing. */
+export function ruleToBody(e: RuleEdit, existing?: { conditions: Record<string, unknown>; actions: Record<string, unknown> }): Record<string, unknown> {
+	const conditions: Record<string, unknown> = { ...(existing?.conditions ?? {}) };
+	const actions: Record<string, unknown> = { ...(existing?.actions ?? {}) };
+	const set = (o: Record<string, unknown>, key: string, value: unknown, keep: boolean) => {
+		if (keep) o[key] = value;
+		else delete o[key];
+	};
+	set(conditions, "senderContains", listOf(e.fromContains), !!e.fromContains.trim());
+	set(conditions, "subjectContains", listOf(e.subjectContains), !!e.subjectContains.trim());
+	set(conditions, "bodyContains", listOf(e.bodyContains), !!e.bodyContains.trim());
+	set(conditions, "recipientContains", listOf(e.toContains), !!e.toContains.trim());
+	set(conditions, "hasAttachments", true, e.hasAttachments);
+	set(conditions, "importance", "high", e.highImportance);
+	set(actions, "moveToFolder", e.moveToFolderId, !!e.moveToFolderId);
+	set(actions, "markAsRead", true, e.markAsRead);
+	set(actions, "markImportance", e.markImportance, !!e.markImportance);
+	set(actions, "delete", true, e.deleteIt);
+	set(actions, "stopProcessingRules", true, e.stopProcessing);
+	return { displayName: e.name.trim() || "Untitled rule", isEnabled: e.enabled, conditions, actions };
+}
+
+/** Whether a rule carries anything this plugin cannot show, so the editor
+ *  can say so rather than letting someone believe they see all of it. */
+export function ruleHasUnknownParts(r: { conditions: Record<string, unknown>; actions: Record<string, unknown>; exceptions: Record<string, unknown> }): boolean {
+	const known = {
+		conditions: ["senderContains", "subjectContains", "bodyContains", "recipientContains", "hasAttachments", "importance"],
+		actions: ["moveToFolder", "markAsRead", "markImportance", "delete", "stopProcessingRules"],
+	};
+	if (Object.keys(r.exceptions ?? {}).length) return true;
+	if (Object.keys(r.conditions ?? {}).some((k) => !known.conditions.includes(k))) return true;
+	return Object.keys(r.actions ?? {}).some((k) => !known.actions.includes(k));
+}
+
+/** A rule as one readable line: what it looks for, then what it does. */
+export function ruleSummary(e: RuleEdit, folderName?: string): string {
+	const when: string[] = [];
+	if (e.fromContains.trim()) when.push(`from ${e.fromContains.trim()}`);
+	if (e.subjectContains.trim()) when.push(`subject has ${e.subjectContains.trim()}`);
+	if (e.bodyContains.trim()) when.push(`body has ${e.bodyContains.trim()}`);
+	if (e.toContains.trim()) when.push(`sent to ${e.toContains.trim()}`);
+	if (e.hasAttachments) when.push("has an attachment");
+	if (e.highImportance) when.push("is high importance");
+	const then: string[] = [];
+	if (e.moveToFolderId) then.push(`move to ${folderName || "a folder"}`);
+	if (e.deleteIt) then.push("delete");
+	if (e.markAsRead) then.push("mark read");
+	if (e.markImportance) then.push(`mark ${e.markImportance} importance`);
+	if (e.stopProcessing) then.push("stop processing rules");
+	if (!when.length && !then.length) return "Does nothing yet";
+	if (!when.length) return `Everything: ${then.join(", ")}`;
+	if (!then.length) return `When ${when.join(" and ")}: nothing yet`;
+	return `When ${when.join(" and ")}: ${then.join(", ")}`;
+}
+
+/* ---------- local search index ---------- */
+
+/** Words worth indexing, lowercased. Splits on everything that is not a
+ *  letter, a digit, or the few marks that hold an address or a ticket number
+ *  together, so "HDTN-510902" and "steve.palm@irely.com" survive as findable
+ *  units as well as breaking into their parts. */
+export function tokenize(text: string): string[] {
+	const out: string[] = [];
+	for (const raw of (text ?? "").toLowerCase().split(/[^a-z0-9._@+-]+/)) {
+		const t = raw.replace(/^[._@+-]+|[._@+-]+$/g, "");
+		if (!t) continue;
+		out.push(t);
+		// an address or a hyphenated id is also findable by its pieces, so
+		// "palm" finds steve.palm@irely.com and "510902" finds the ticket
+		if (/[._@+-]/.test(t)) for (const p of t.split(/[._@+-]+/)) if (p && p !== t) out.push(p);
+	}
+	return out;
+}
+
+export interface IndexDoc {
+	id: string;
+	subject: string;
+	from: string;
+	body: string;
+	ms: number;
+	unread: boolean;
+	flagged: boolean;
+	hasAttachments: boolean;
+}
+
+export interface MailIndex {
+	/** token to the ids that carry it. */
+	postings: Map<string, Set<string>>;
+	docs: Map<string, IndexDoc>;
+}
+
+/** Build an inverted index over what is already cached. Subject and sender
+ *  are indexed always; the body only for messages whose body has been read,
+ *  which is why local search finds more the longer a mailbox is used. */
+export function buildIndex(docs: IndexDoc[]): MailIndex {
+	const postings = new Map<string, Set<string>>();
+	const byId = new Map<string, IndexDoc>();
+	for (const d of docs) {
+		byId.set(d.id, d);
+		for (const t of new Set([...tokenize(d.subject), ...tokenize(d.from), ...tokenize(d.body)])) {
+			let set = postings.get(t);
+			if (!set) postings.set(t, (set = new Set()));
+			set.add(d.id);
+		}
+	}
+	return { postings, docs: byId };
+}
+
+export interface ParsedQuery {
+	/** Bare words, matched as prefixes against the index. */
+	terms: string[];
+	/** Quoted runs, matched as substrings of the whole document. */
+	phrases: string[];
+	from: string[];
+	subject: string[];
+	unread?: boolean;
+	flagged?: boolean;
+	attachments?: boolean;
+	/** Local midnight bounds from after: and before:, as epoch ms. `before`
+	 *  is the end of that day, since "before Friday" said out loud does not
+	 *  mean "before midnight on Friday morning". */
+	afterMs?: number;
+	beforeMs?: number;
+}
+
+/** A date written the way a search box takes it: a day key, or nothing. */
+function parseDayBound(v: string, endOfDay: boolean): number | undefined {
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v.trim());
+	if (!m) return undefined;
+	const ms = msOfKey(`${m[1]}-${m[2]}-${m[3]}`);
+	return endOfDay ? ms + 86399999 : ms;
+}
+
+/** The small query language a mail search box is expected to speak:
+ *  `from:steve`, `subject:invoice`, `is:unread`, `is:flagged`,
+ *  `has:attachment`, "a quoted phrase", and bare words for everything else. */
+export function parseQuery(q: string): ParsedQuery {
+	const out: ParsedQuery = { terms: [], phrases: [], from: [], subject: [] };
+	for (const m of (q ?? "").matchAll(/"([^"]*)"|(\S+)/g)) {
+		const phrase = m[1];
+		if (phrase !== undefined) {
+			if (phrase.trim()) out.phrases.push(phrase.trim().toLowerCase());
+			continue;
+		}
+		const tok = m[2];
+		const pair = tok.match(/^(from|subject|is|has|after|before):(.+)$/i);
+		if (!pair) {
+			out.terms.push(...tokenize(tok));
+			continue;
+		}
+		const key = pair[1].toLowerCase();
+		const val = pair[2].toLowerCase();
+		if (key === "from") out.from.push(val);
+		else if (key === "subject") out.subject.push(val);
+		else if (key === "is") {
+			if (val === "unread") out.unread = true;
+			else if (val === "read") out.unread = false;
+			else if (val === "flagged") out.flagged = true;
+		} else if (key === "has") {
+			if (val.startsWith("attach")) out.attachments = true;
+		} else if (key === "after") out.afterMs = parseDayBound(val, false);
+		else if (key === "before") out.beforeMs = parseDayBound(val, true);
+	}
+	return out;
+}
+
+export interface SearchFields {
+	words: string;
+	from: string;
+	subject: string;
+	phrase: string;
+	unread: boolean;
+	flagged: boolean;
+	attachments: boolean;
+	after: string;
+	before: string;
+}
+
+/** Fields from a search dialog into the query language itself.
+ *
+ *  The dialog composes the same text you could type, rather than a private
+ *  structure: what it builds is shown back to you, so the box and the boxes
+ *  are the same search and using one teaches the other. */
+export function buildQuery(f: Partial<SearchFields>): string {
+	const parts: string[] = [];
+	const words = (f.words ?? "").trim();
+	if (words) parts.push(words);
+	if ((f.phrase ?? "").trim()) parts.push(`"${(f.phrase ?? "").trim().replace(/"/g, "")}"`);
+	for (const v of (f.from ?? "").split(/[,;]+/).map((x) => x.trim()).filter(Boolean)) parts.push(`from:${v}`);
+	for (const v of (f.subject ?? "").split(/\s+/).filter(Boolean)) parts.push(`subject:${v}`);
+	if (f.unread) parts.push("is:unread");
+	if (f.flagged) parts.push("is:flagged");
+	if (f.attachments) parts.push("has:attachment");
+	if ((f.after ?? "").trim()) parts.push(`after:${(f.after ?? "").trim()}`);
+	if ((f.before ?? "").trim()) parts.push(`before:${(f.before ?? "").trim()}`);
+	return parts.join(" ");
+}
+
+/** The part of a query the mailbox can answer, and nothing else.
+ *
+ *  Graph's search speaks words, phrases, from: and subject:, and treats
+ *  anything else as text to look for: send it `is:unread` and it hunts for
+ *  messages containing the string "is:unread", which is worse than useless
+ *  because it looks like it worked. The rest is applied here instead. */
+export function graphSearchText(p: ParsedQuery): string {
+	const parts: string[] = [...p.terms];
+	for (const x of p.phrases) parts.push(`"${x}"`);
+	for (const x of p.from) parts.push(`from:${x}`);
+	for (const x of p.subject) parts.push(`subject:${x}`);
+	return parts.join(" ");
+}
+
+/** Whether a message passes the parts of a query the mailbox did not apply.
+ *  Used on results that came back from the server, which knew nothing about
+ *  the flags or the dates. */
+export function passesLocalFilters(m: PCMail, p: ParsedQuery): boolean {
+	if (p.unread !== undefined && m.unread !== p.unread) return false;
+	if (p.flagged && !m.flagged) return false;
+	if (p.attachments && !m.hasAttachments) return false;
+	if (p.afterMs !== undefined && m.receivedMs < p.afterMs) return false;
+	if (p.beforeMs !== undefined && m.receivedMs > p.beforeMs) return false;
+	return true;
+}
+
+/** Ids that satisfy a parsed query, best first.
+ *
+ *  Bare words match as prefixes, so results narrow with every keystroke
+ *  rather than appearing only once a word is finished. Every word has to
+ *  match something (AND, the way a mail search is expected to behave), and a
+ *  hit in the subject or the sender outranks one buried in a body. */
+export function searchIndex(index: MailIndex, q: string, limit = 100): string[] {
+	const p = parseQuery(q);
+	const anything =
+		p.terms.length || p.phrases.length || p.from.length || p.subject.length || p.unread !== undefined || p.flagged || p.attachments || p.afterMs !== undefined || p.beforeMs !== undefined;
+	if (!anything) return [];
+
+	let candidates: Set<string> | null = null;
+	for (const term of p.terms) {
+		const hits = new Set<string>();
+		// an exact token is the common case; the prefix sweep covers the word
+		// still being typed
+		for (const id of index.postings.get(term) ?? []) hits.add(id);
+		for (const [tok, ids] of index.postings) if (tok.length > term.length && tok.startsWith(term)) for (const id of ids) hits.add(id);
+		candidates = candidates ? new Set([...candidates].filter((id) => hits.has(id))) : hits;
+		if (!candidates.size) return [];
+	}
+	const pool = candidates ? [...candidates] : [...index.docs.keys()];
+
+	const scored: { id: string; rank: number; ms: number }[] = [];
+	for (const id of pool) {
+		const d = index.docs.get(id);
+		if (!d) continue;
+		const subject = d.subject.toLowerCase();
+		const from = d.from.toLowerCase();
+		const body = d.body.toLowerCase();
+		if (p.afterMs !== undefined && d.ms < p.afterMs) continue;
+		if (p.beforeMs !== undefined && d.ms > p.beforeMs) continue;
+		if (p.unread !== undefined && d.unread !== p.unread) continue;
+		if (p.flagged && !d.flagged) continue;
+		if (p.attachments && !d.hasAttachments) continue;
+		if (!p.from.every((x) => from.includes(x))) continue;
+		if (!p.subject.every((x) => subject.includes(x))) continue;
+		if (!p.phrases.every((x) => subject.includes(x) || from.includes(x) || body.includes(x))) continue;
+		const strong = p.terms.some((t) => subject.includes(t) || from.includes(t)) || p.phrases.some((x) => subject.includes(x) || from.includes(x));
+		scored.push({ id, rank: strong ? 0 : 1, ms: d.ms });
+	}
+	return scored
+		.sort((a, b) => a.rank - b.rank || b.ms - a.ms)
+		.slice(0, limit)
+		.map((s) => s.id);
+}
+
+/* ---------- recipient autocomplete ---------- */
+
+export interface ContactHit {
+	name: string;
+	email: string;
+	/** How many times this address has been seen, which is the whole of the
+	 *  ranking signal along with recency. */
+	count: number;
+	lastMs: number;
+}
+
+/** Fold every sighting of an address into one ranked entry each.
+ *
+ *  The name is whichever sighting was most recent and actually carried one,
+ *  since people change how they sign and the latest is the one they answer
+ *  to. Ranking is count first and recency second: the address you write to
+ *  constantly should lead even if you wrote to someone else this morning. */
+export function rankContacts(seen: { name?: string; email: string; ms: number }[]): ContactHit[] {
+	const byEmail = new Map<string, ContactHit>();
+	for (const s of seen) {
+		const email = s.email.trim().toLowerCase();
+		if (!email.includes("@") || email.length < 3) continue;
+		const name = (s.name ?? "").trim();
+		const hit = byEmail.get(email);
+		if (!hit) {
+			byEmail.set(email, { name, email, count: 1, lastMs: s.ms });
+			continue;
+		}
+		hit.count++;
+		if (s.ms > hit.lastMs) {
+			hit.lastMs = s.ms;
+			if (name) hit.name = name;
+		} else if (!hit.name && name) hit.name = name;
+	}
+	return [...byEmail.values()].sort((a, b) => b.count - a.count || b.lastMs - a.lastMs);
+}
+
+/** The suggestions for what has been typed so far.
+ *
+ *  A prefix beats a match in the middle, because someone typing "ste" means
+ *  Steve rather than "webmaster@stevecorp". Both the address and every word
+ *  of the name are candidates for the prefix, so "palm" finds Steve Palm and
+ *  "steve.p" finds the address. */
+export function matchContacts(index: ContactHit[], query: string, limit = 8): ContactHit[] {
+	const q = query.trim().toLowerCase();
+	if (!q) return index.slice(0, limit);
+	const words = (c: ContactHit) => [c.email, c.email.split("@")[0], ...c.name.toLowerCase().split(/[\s,._-]+/)].filter(Boolean);
+	const scored: { c: ContactHit; rank: number }[] = [];
+	for (const c of index) {
+		const w = words(c);
+		if (w.some((x) => x.startsWith(q))) scored.push({ c, rank: 0 });
+		else if (c.email.includes(q) || c.name.toLowerCase().includes(q)) scored.push({ c, rank: 1 });
+	}
+	return scored
+		.sort((a, b) => a.rank - b.rank || b.c.count - a.c.count || b.c.lastMs - a.c.lastMs)
+		.slice(0, limit)
+		.map((s) => s.c);
+}
+
+export interface SavedContact {
+	name: string;
+	email: string;
+	company?: string;
+	title?: string;
+	phone?: string;
+}
+
+export interface PersonCard extends ContactHit {
+	/** In the mailbox's own Contacts, rather than only inferred from mail. */
+	saved: boolean;
+	company?: string;
+	title?: string;
+	phone?: string;
+}
+
+/** The address book and the correspondence, as one list.
+ *
+ *  A saved contact you have never written to still belongs here, and a
+ *  colleague you write to daily who was never saved belongs here more. So
+ *  the two merge by address, keeping the saved details and the real counts,
+ *  and the order is how much you actually deal with someone first, then the
+ *  saved names you have not, alphabetically. A contact with several
+ *  addresses appears once per address, because the address is what you send
+ *  to and the one you actually use is the one that will rise. */
+export function mergePeople(seen: readonly ContactHit[], contacts: readonly SavedContact[]): PersonCard[] {
+	const by = new Map<string, PersonCard>();
+	for (const c of seen) by.set(c.email, { ...c, saved: false });
+	for (const c of contacts) {
+		const email = c.email.trim().toLowerCase();
+		if (!email.includes("@")) continue;
+		const hit = by.get(email);
+		if (hit) {
+			hit.saved = true;
+			// the address book's name is the deliberate one; a name scraped
+			// off a From line is whatever that sender happened to set
+			if (c.name.trim()) hit.name = c.name.trim();
+			hit.company = c.company || hit.company;
+			hit.title = c.title || hit.title;
+			hit.phone = c.phone || hit.phone;
+		} else {
+			by.set(email, { name: c.name.trim() || email, email, count: 0, lastMs: 0, saved: true, company: c.company, title: c.title, phone: c.phone });
+		}
+	}
+	return [...by.values()].sort((a, b) => b.count - a.count || b.lastMs - a.lastMs || a.name.localeCompare(b.name));
+}
+
+/** The fragment being typed in a comma-separated recipient box: where it
+ *  starts and what it says. Everything before it is already-entered
+ *  addresses and must survive untouched when a suggestion is taken. */
+export function currentAddressFragment(value: string, caret: number): { start: number; text: string } {
+	const upto = value.slice(0, caret);
+	const cut = Math.max(upto.lastIndexOf(","), upto.lastIndexOf(";"));
+	const start = cut + 1;
+	return { start, text: value.slice(start, caret).trim() };
+}
+
+/** A chosen address folded back into the box, replacing only the fragment
+ *  that was being typed and leaving a trailing comma to carry on from. */
+export function applyAddressChoice(value: string, caret: number, email: string): { value: string; caret: number } {
+	const { start } = currentAddressFragment(value, caret);
+	const before = value.slice(0, start);
+	const after = value.slice(caret);
+	const lead = before && !/[\s]$/.test(before) ? " " : "";
+	const next = `${before}${lead}${email}, `;
+	return { value: `${next}${after.replace(/^[\s,;]+/, "")}`, caret: next.length };
+}
+
+export interface WhenPreset {
+	label: string;
+	ms: number;
+}
+
+/** A chosen time written the way a confirmation should read it: the day in
+ *  words when it is close, the date when it is not. */
+export function fmtWhen(ms: number, use24h: boolean): string {
+	const key = keyOfMs(ms);
+	const today = keyOfDate(new Date());
+	const days = dayDiff(today, key);
+	const time = fmtTimeOfMs(ms, use24h, true);
+	if (days === 0) return `today at ${time}`;
+	if (days === 1) return `tomorrow at ${time}`;
+	if (days > 1 && days < 7) return `${fmtDayHeading(key)} at ${time}`;
+	return `${fmtDayShort(key, true)} at ${time}`;
+}
+
+/** The "later" menu every mail client offers, resolved against a local
+ *  clock. Snooze uses it to decide when a message comes back and schedule
+ *  send to decide when a draft goes out, so the two read the same.
+ *
+ *  Presets that have already passed today are left out rather than offered
+ *  as a time in the past: at 9pm "This evening" is not a choice, and a menu
+ *  that offers it is a menu that will quietly do nothing. */
+export function whenPresets(nowMs: number): WhenPreset[] {
+	const key = keyOfMs(nowMs);
+	const at = (dayKey: string, hour: number) => msOfKey(dayKey) + hour * 3600000;
+	const mins = minutesOfMs(nowMs);
+	const out: WhenPreset[] = [];
+	if (mins < 15 * 60) out.push({ label: "Later today", ms: nowMs + 3 * 3600000 });
+	if (mins < 17 * 60) out.push({ label: "This evening", ms: at(key, 18) });
+	out.push({ label: "Tomorrow morning", ms: at(addDays(key, 1), 8) });
+	out.push({ label: "Tomorrow afternoon", ms: at(addDays(key, 1), 13) });
+	// 0 is Sunday. The weekend means the coming Saturday, and asking for it
+	// on a Saturday means the next one, not this morning.
+	const dow = dayOfWeek(key);
+	const toSat = dow === 6 ? 7 : dow === 0 ? 6 : 6 - dow;
+	out.push({ label: "This weekend", ms: at(addDays(key, toSat), 8) });
+	const toMon = dow === 1 ? 7 : (8 - dow) % 7;
+	out.push({ label: "Next week", ms: at(addDays(key, toMon), 8) });
+	return out;
+}
+
+/** A back-and-forth collapsed into one row: the messages newest first, and
+ *  the marks and counts rolled up off all of them. */
+export interface MailThread {
+	/** Account and conversation together, since a conversation id is only
+	 *  unique inside its own mailbox and two accounts must never braid. */
+	key: string;
+	/** Newest first, which is the order a collapsed thread expands into. */
+	messages: PCMail[];
+	/** The newest message: what a collapsed row shows, and what clicking it
+	 *  opens. Outlook lands on the newest too. */
+	latest: PCMail;
+	unread: number;
+	/** Everyone who wrote, newest first, for the collapsed row's name line. */
+	senders: string[];
+	hasAttachments: boolean;
+	flagged: boolean;
+	priority: boolean;
+}
+
+/** Group a rendered list into conversations, keeping the list's own order:
+ *  a thread sits where its first message sat, so whatever sort produced the
+ *  list still decides what comes first. A message with no conversation id is
+ *  a thread of one, which is what makes this safe over a cache written
+ *  before threading existed. */
+export function groupThreads(messages: PCMail[]): MailThread[] {
+	const byKey = new Map<string, PCMail[]>();
+	const order: string[] = [];
+	for (const m of messages) {
+		const key = m.conversationId ? `${m.accountId}\u0000${m.conversationId}` : `\u0000id\u0000${m.id}`;
+		const bucket = byKey.get(key);
+		if (bucket) bucket.push(m);
+		else {
+			byKey.set(key, [m]);
+			order.push(key);
+		}
+	}
+	return order.map((key) => {
+		const msgs = [...(byKey.get(key) ?? [])].sort((a, b) => b.receivedMs - a.receivedMs);
+		const senders: string[] = [];
+		for (const m of msgs) if (!senders.includes(m.from)) senders.push(m.from);
+		return {
+			key,
+			messages: msgs,
+			latest: msgs[0],
+			unread: msgs.filter((m) => m.unread).length,
+			senders,
+			hasAttachments: msgs.some((m) => !!m.hasAttachments),
+			flagged: msgs.some((m) => !!m.flagged),
+			priority: msgs.some((m) => !!m.priority),
+		};
+	});
 }
 
 export interface MailFolder {
@@ -546,7 +1782,16 @@ export function graphFolderToPC(f: GraphFolderLike): MailFolder | null {
  *  `expandable` reflects FETCHED children, so a chevron never opens onto
  *  nothing. A folder whose parent was not fetched surfaces at the top level
  *  rather than vanishing. */
-export function orderFolderTree(folders: MailFolder[], inboxId: string | null, collapsed?: Set<string>): { folder: MailFolder; depth: number; expandable: boolean }[] {
+export function orderFolderTree(
+	folders: MailFolder[],
+	inboxId: string | null,
+	collapsed?: Set<string>,
+	/** Folder ids the user has dragged into an order of their own. Anything
+	 *  named here leads, in this order; everything else keeps the default
+	 *  alphabetical arrangement behind it, so ordering three folders by hand
+	 *  does not scramble the other thirty. */
+	custom?: string[]
+): { folder: MailFolder; depth: number; expandable: boolean }[] {
 	const ids = new Set(folders.map((f) => f.id));
 	const byParent = new Map<string | null, MailFolder[]>();
 	for (const f of folders) {
@@ -555,21 +1800,50 @@ export function orderFolderTree(folders: MailFolder[], inboxId: string | null, c
 		if (arr) arr.push(f);
 		else byParent.set(p, [f]);
 	}
+	const rank = new Map((custom ?? []).map((id, i) => [id, i]));
 	const alpha = (a: MailFolder, b: MailFolder) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+	/** Custom placement first, then the old rule for everything untouched. */
+	const order = (a: MailFolder, b: MailFolder) => {
+		const ra = rank.get(a.id);
+		const rb = rank.get(b.id);
+		if (ra !== undefined && rb !== undefined) return ra - rb;
+		if (ra !== undefined) return -1;
+		if (rb !== undefined) return 1;
+		return alpha(a, b);
+	};
 	const top = (byParent.get(null) ?? []).slice().sort((a, b) => {
-		const ai = a.id === inboxId ? 0 : 1;
-		const bi = b.id === inboxId ? 0 : 1;
-		return ai - bi || alpha(a, b);
+		// the inbox stays on top unless it has been dragged somewhere itself
+		const pinned = (f: MailFolder) => (f.id === inboxId && !rank.has(f.id) ? 0 : 1);
+		return pinned(a) - pinned(b) || order(a, b);
 	});
 	const out: { folder: MailFolder; depth: number; expandable: boolean }[] = [];
 	const walk = (f: MailFolder, depth: number) => {
-		const kids = (byParent.get(f.id) ?? []).slice().sort(alpha);
+		const kids = (byParent.get(f.id) ?? []).slice().sort(order);
 		out.push({ folder: f, depth, expandable: kids.length > 0 });
 		if (collapsed?.has(f.id)) return;
 		for (const child of kids) walk(child, depth + 1);
 	};
 	for (const f of top) walk(f, 0);
 	return out;
+}
+
+// prettier-ignore
+const SYSTEM_FOLDERS = new Set([
+	"inbox", "drafts", "sent items", "deleted items", "junk email", "outbox", "archive",
+	"conversation history", "notes", "journal", "tasks", "rss feeds", "rss subscriptions",
+	"sync issues", "conflicts", "local failures", "server failures", "clutter", "scheduled",
+]);
+
+/** Whether a folder is one the mailbox runs on rather than one you made.
+ *
+ *  Renaming Sent Items or deleting Drafts is not something to offer, and
+ *  Graph's refusal would arrive as a raw error after the fact. The inbox is
+ *  matched by id because it is the one folder whose id is already known for
+ *  certain; the rest go by name, which is a good guard in an English mailbox
+ *  and a harmless one in any other, since Graph still refuses. */
+export function isSystemFolder(name: string, folderId: string, inboxId: string | null): boolean {
+	if (inboxId && folderId === inboxId) return true;
+	return SYSTEM_FOLDERS.has((name ?? "").trim().toLowerCase());
 }
 
 /** The ids of a folder and everything under it: how the Unread search folder
@@ -887,6 +2161,87 @@ export function avatarColor(name: string): string {
 	return paletteColor(Math.abs(h));
 }
 
+/** The file types worth their own color, keyed by extension. The colors are
+ *  the ones people already read without thinking: Word blue, Excel green,
+ *  PowerPoint orange, PDF red. Everything else groups by what it is, so a
+ *  bar of attachments is scannable by color before a single name is read. */
+// prettier-ignore
+const ATT_TYPES: { exts: string[]; color: string }[] = [
+	{ exts: ["pdf"], color: "#c0392b" },
+	{ exts: ["doc", "docx", "docm", "dot", "dotx", "odt", "rtf", "pages"], color: "#2b579a" },
+	{ exts: ["xls", "xlsx", "xlsm", "xlsb", "csv", "tsv", "ods", "numbers"], color: "#217346" },
+	{ exts: ["ppt", "pptx", "pptm", "pot", "potx", "odp", "key"], color: "#c43e1c" },
+	{ exts: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif", "tif", "tiff", "svg", "avif"], color: "#8250df" },
+	{ exts: ["zip", "rar", "7z", "tar", "gz", "bz2", "xz"], color: "#b7791f" },
+	{ exts: ["mp4", "mov", "avi", "mkv", "webm", "wmv", "m4v"], color: "#bf3989" },
+	{ exts: ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma"], color: "#0f766e" },
+	{ exts: ["msg", "eml", "oft"], color: "#0f6cbd" },
+	{ exts: ["ics", "vcs", "vcf"], color: "#7048c4" },
+	{ exts: ["htm", "html", "xml", "json", "yml", "yaml", "js", "ts", "py", "cs", "java", "sql", "sh"], color: "#0e7490" },
+	{ exts: ["txt", "md", "log", "ini", "cfg"], color: "#57606a" },
+];
+
+/** The MIME families worth recognizing when a name carries no extension.
+ *  Graph always sends a contentType, so this is the fallback that keeps a
+ *  bare "image001" from landing in the gray bucket. */
+// prettier-ignore
+const ATT_MIME: { test: RegExp; label: string; color: string }[] = [
+	{ test: /^image\//i, label: "IMG", color: "#8250df" },
+	{ test: /^video\//i, label: "VID", color: "#bf3989" },
+	{ test: /^audio\//i, label: "AUD", color: "#0f766e" },
+	{ test: /pdf/i, label: "PDF", color: "#c0392b" },
+	{ test: /(zip|compressed|tar)/i, label: "ZIP", color: "#b7791f" },
+	{ test: /(rfc822|outlook)/i, label: "MAIL", color: "#0f6cbd" },
+	{ test: /calendar/i, label: "ICS", color: "#7048c4" },
+	{ test: /^text\//i, label: "TXT", color: "#57606a" },
+];
+
+/** An attachment's badge: the short label to print on it and the color to
+ *  print it in. The label is the extension, which is what the eye is looking
+ *  for anyway, capped at four characters so a long one cannot stretch the
+ *  chip. A type nothing recognizes still gets its extension on a neutral
+ *  gray, which reads better than a generic paperclip. */
+export function attachmentBadge(name: string, contentType = ""): { label: string; color: string } {
+	const ext = (name.match(/\.([A-Za-z0-9]{1,8})$/)?.[1] ?? "").toLowerCase();
+	if (ext) {
+		const hit = ATT_TYPES.find((t) => t.exts.includes(ext));
+		return { label: ext.slice(0, 4).toUpperCase(), color: hit?.color ?? "#6b7280" };
+	}
+	const mime = ATT_MIME.find((t) => t.test.test(contentType));
+	if (mime) return { label: mime.label, color: mime.color };
+	return { label: "FILE", color: "#6b7280" };
+}
+
+// prettier-ignore
+const MIME_BY_EXT: Record<string, string> = {
+	pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", tsv: "text/tab-separated-values",
+	html: "text/html", htm: "text/html", xml: "application/xml", json: "application/json",
+	png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+	bmp: "image/bmp", avif: "image/avif", heic: "image/heic", tif: "image/tiff", tiff: "image/tiff",
+	doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	zip: "application/zip", gz: "application/gzip", tar: "application/x-tar", "7z": "application/x-7z-compressed",
+	mp3: "audio/mpeg", wav: "audio/wav", m4a: "audio/mp4", ogg: "audio/ogg", flac: "audio/flac",
+	mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime",
+	ics: "text/calendar", eml: "message/rfc822",
+};
+
+/** A file extension's content type, for outgoing attachments. Graph accepts
+ *  a generic type happily, but the right one is what decides whether the
+ *  recipient's client offers to preview the file or only to download it. */
+export function mimeForExtension(ext: string): string {
+	return MIME_BY_EXT[(ext ?? "").toLowerCase().replace(/^\./, "")] ?? "application/octet-stream";
+}
+
+/** An attachment's size the way a mail client writes it: whole KB up to a
+ *  megabyte, one decimal past it, and never "0 KB" for a file that exists. */
+export function fmtAttachmentSize(bytes: number): string {
+	if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`;
+	if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+	return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
 /* ---------- place lookup ---------- */
 
 export interface GeoHit {
@@ -1052,7 +2407,10 @@ export function graphEventBody(d: EventDraft, tz: string): Record<string, unknow
 		...graphTimesBody(d.startMs, d.endMs, d.allDay, tz),
 	};
 	if (d.location != null) body.location = { displayName: d.location.trim() };
-	if (d.description != null) body.body = { contentType: "text", content: d.description };
+	// a description written in the rich editor arrives as markup and has to
+	// be declared as such, or Graph shows the tags to everyone invited;
+	// anything without a tag in it still goes as plain text
+	if (d.description != null) body.body = { contentType: /<[a-z][\s\S]*>/i.test(d.description) ? "html" : "text", content: d.description };
 	if (d.attendees != null) body.attendees = d.attendees.map((a) => ({ emailAddress: { address: a.email, ...(a.name ? { name: a.name } : {}) }, type: "required" }));
 	const rec = d.repeat ? graphRecurrence(d.repeat, keyOfMs(d.startMs)) : null;
 	if (rec) body.recurrence = rec;
@@ -1382,6 +2740,74 @@ export interface BatchRequest {
 	id: string;
 	method: string;
 	url: string;
+	headers?: Record<string, string>;
+	body?: unknown;
+}
+
+/** The body of a $batch that rewrites several messages' categories.
+ *
+ *  A write batch needs what a read batch does not: a Content-Type on each
+ *  sub-request, since Graph parses each one as its own request and a PATCH
+ *  with no content type is rejected. Sub-requests are keyed by index, as the
+ *  read batch does, because Graph ids are far too long for the field. */
+export function buildCategoryPatchBatch(items: readonly { id: string; categories: string[] }[]): { requests: BatchRequest[] } {
+	return {
+		requests: items.map((it, i) => ({
+			id: String(i),
+			method: "PATCH",
+			url: `/me/messages/${encodeURIComponent(it.id)}`,
+			headers: { "Content-Type": "application/json" },
+			body: { categories: it.categories },
+		})),
+	};
+}
+
+/** The body of a $batch that marks several messages read or unread. Same
+ *  shape as the category batch and for the same reason: Graph has no bulk
+ *  read API, so a folder of four hundred unread is four hundred writes, and
+ *  twenty at a time is the difference between a second and a minute. */
+export function buildReadPatchBatch(ids: readonly string[], read: boolean): { requests: BatchRequest[] } {
+	return {
+		requests: ids.map((id, i) => ({
+			id: String(i),
+			method: "PATCH",
+			url: `/me/messages/${encodeURIComponent(id)}`,
+			headers: { "Content-Type": "application/json" },
+			body: { isRead: read },
+		})),
+	};
+}
+
+/** Which ids in a write batch came back happy, by index. */
+export function parseWriteBatch(reply: unknown, ids: readonly string[]): { ok: string[]; failed: string[] } {
+	const responses = (reply as { responses?: { id?: string; status?: number }[] } | null)?.responses;
+	if (!Array.isArray(responses)) return { ok: [], failed: [...ids] };
+	const ok: string[] = [];
+	const seen = new Set<string>();
+	for (const r of responses) {
+		const idx = Number(r?.id);
+		const id = ids[idx];
+		if (id === undefined) continue;
+		seen.add(id);
+		if ((r?.status ?? 500) < 400) ok.push(id);
+	}
+	return { ok, failed: ids.filter((id) => !ok.includes(id)) };
+}
+
+/** Replace one category name with another in a list, leaving the rest and
+ *  their order alone. Used to retag a message during a category replace. */
+export function replaceCategory(current: string[] | undefined, from: string, to: string): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const c of current ?? []) {
+		const next = c.toLowerCase() === from.toLowerCase() ? to : c;
+		// a message already carrying both names must not end up with the new
+		// one twice, which Outlook would show as a duplicate label
+		if (seen.has(next.toLowerCase())) continue;
+		seen.add(next.toLowerCase());
+		out.push(next);
+	}
+	return out;
 }
 
 /** The body of a $batch that reads several messages in one round trip.

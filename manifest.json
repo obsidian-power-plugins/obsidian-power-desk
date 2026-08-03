@@ -1,7 +1,7 @@
 {
 	"id": "powerdesk",
 	"name": "Power Desk",
-	"version": "1.59.3",
+	"version": "2.6.0",
 	"minAppVersion": "1.8.7",
 	"description": "Bring Microsoft 365, Google, CalDAV, and ICS calendars into Obsidian in month, week, day, and agenda views, with a mail triage inbox and a note per event.",
 	"author": "Power Plugins",

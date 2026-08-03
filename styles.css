@@ -115,6 +115,64 @@
 	flex-wrap: wrap;
 }
 
+/* the calendar's action buttons sit together, the way mail's do */
+.pcal-cal-tools {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	flex-wrap: wrap;
+}
+
+/* the customize button sits apart from the actions, faint until wanted */
+.pcal-mail-tool-more {
+	margin-left: 6px;
+	opacity: 0.45;
+}
+
+.pcal-mail-tools:hover .pcal-mail-tool-more {
+	opacity: 1;
+}
+
+/* the toolbar editor: one row per action, its controls on the right */
+.pcal-toolbar-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-toolbar-ic {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.pcal-toolbar-ic .svg-icon {
+	width: 15px;
+	height: 15px;
+}
+
+.pcal-toolbar-label {
+	flex: 1;
+	min-width: 0;
+	color: var(--text-normal);
+}
+
+.pcal-toolbar-row button {
+	flex-shrink: 0;
+	padding: 2px 7px;
+	height: auto;
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.pcal-toolbar-row button:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
 /* drag the seams; the widths stick per device */
 .pcal-mail-splitter {
 	flex: 0 0 4px;
@@ -1557,6 +1615,14 @@ button.pcal-card-more .svg-icon {
 }
 
 /* the Favorites block above the folder tree */
+/* the rule under the favorites, with air on both sides of it, so the
+   shortlist reads as its own thing rather than the top of the first account */
+.pcal-folder-sep {
+	height: 1px;
+	margin: 10px 6px 12px;
+	background: var(--background-modifier-border);
+}
+
 .pcal-folder-favhead {
 	margin: 6px 6px 2px;
 	color: var(--text-muted);
@@ -1600,17 +1666,40 @@ button.pcal-card-more .svg-icon {
 	color: var(--text-muted);
 }
 
+/* reordering a favorite: a line where it would land */
 .pcal-folder-row.pcal-drop-target {
 	box-shadow: inset 0 2px 0 var(--interactive-accent);
 }
 
+/* filing a message into a folder: the whole row lights up, since the message
+   is going into it rather than between anything */
+.pcal-folder-row.pcal-mail-drop {
+	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+	box-shadow: inset 0 0 0 2px var(--pcal-mail-blue, #0f6cbd);
+	border-radius: 5px;
+}
+
+/* the row being dragged, so it is obvious what is in flight */
+.pcal-mail-row[draggable="true"]:active {
+	opacity: 0.6;
+}
+
 /* sender avatars, Outlook-style */
+/* a real photo when the directory has one; the lettered circle is the
+   fallback rather than the intent */
+.pcal-mail-avatar.has-photo {
+	background-size: cover;
+	background-position: center;
+	background-repeat: no-repeat;
+	background-color: var(--background-modifier-border);
+}
+
 .pcal-mail-avatar {
-	width: 32px;
-	height: 32px;
+	width: var(--pcal-avatar, 32px);
+	height: var(--pcal-avatar, 32px);
 	border-radius: 50%;
 	color: #fff;
-	font-size: 12px;
+	font-size: calc(var(--pcal-avatar, 32px) * 0.375);
 	font-weight: var(--font-semibold);
 	display: flex;
 	align-items: center;
@@ -1625,17 +1714,23 @@ button.pcal-card-more .svg-icon {
 	position: relative;
 }
 
+/* the avatar and its checkbox occupy one box, so the two are concentric at
+   any density and stay put however many columns the row grows in front of
+   them (the conversation twisty, for one) */
+.pcal-mail-avatarwrap {
+	position: relative;
+	flex-shrink: 0;
+	width: var(--pcal-avatar, 32px);
+	height: var(--pcal-avatar, 32px);
+}
+
 .pcal-mail-check {
 	display: none;
 	position: absolute;
-	left: 14px;
-	top: 50%;
-	transform: translateY(-50%);
+	inset: 0;
 	align-items: center;
 	justify-content: center;
-	width: 24px;
-	height: 24px;
-	border-radius: 6px;
+	border-radius: 50%;
 	background: var(--background-primary);
 	color: var(--text-muted);
 	cursor: default;
@@ -1651,14 +1746,17 @@ button.pcal-card-more .svg-icon {
 	height: 16px;
 }
 
-.pcal-mail-row:hover .pcal-mail-check,
+/* Checkboxes appear when you are actually picking messages: in Select mode,
+   or once a Ctrl-click has started a selection. Deliberately NOT on hover:
+   swapping every face for a box as the pointer crosses the list is a flicker
+   the whole length of the column, and the Select button already says plainly
+   when checkboxes are wanted. */
 .pcal-mail-list.has-multisel .pcal-mail-check,
 .pcal-mail-list.select-mode .pcal-mail-check {
 	display: flex;
 }
 
 /* the checkbox takes the avatar's place outright, no peeking circle */
-.pcal-mail-row:hover .pcal-mail-avatar,
 .pcal-mail-list.has-multisel .pcal-mail-avatar,
 .pcal-mail-list.select-mode .pcal-mail-avatar {
 	visibility: hidden;
@@ -1676,7 +1774,7 @@ button.pcal-card-more .svg-icon {
 
 /* unread: a firm bar, a bold name, an accent subject */
 .pcal-mail-row.is-unread {
-	box-shadow: inset 3px 0 0 var(--interactive-accent);
+	box-shadow: inset 3px 0 0 var(--pcal-mail-blue, #0f6cbd);
 }
 
 .pcal-mail-row.is-unread .pcal-mail-from {
@@ -1685,7 +1783,7 @@ button.pcal-card-more .svg-icon {
 }
 
 .pcal-mail-row.is-unread .pcal-mail-subject {
-	color: var(--text-accent);
+	color: var(--pcal-mail-blue, #0f6cbd);
 	font-weight: var(--font-medium);
 }
 
@@ -1832,12 +1930,12 @@ button.pcal-card-more .svg-icon {
 .pcal-mail-att {
 	display: flex;
 	align-items: center;
-	gap: 7px;
+	gap: 8px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 7px;
-	padding: 5px 10px;
-	max-width: 240px;
-	cursor: default;
+	padding: 5px 6px 5px 8px;
+	max-width: 260px;
+	cursor: pointer;
 }
 
 .pcal-mail-att:hover {
@@ -1845,10 +1943,1207 @@ button.pcal-card-more .svg-icon {
 	border-color: var(--interactive-accent);
 }
 
-.pcal-mail-att-icon .svg-icon {
+/* the file type as a colored tile, the way every mail client draws it: the
+   extension is the label, and the color does the recognizing before the name
+   is read. The color arrives per chip as a custom property. */
+.pcal-mail-att-icon {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	border-radius: 5px;
+	background: var(--pcal-att-color, #6b7280);
+	color: #ffffff;
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	line-height: 1;
+}
+
+.pcal-mail-att-chevron {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	color: var(--text-faint);
+	margin-left: auto;
+}
+
+.pcal-mail-att:hover .pcal-mail-att-chevron {
+	color: var(--text-normal);
+}
+
+.pcal-mail-att-chevron .svg-icon {
+	width: 15px;
+	height: 15px;
+}
+
+/* the mail palette: what it does on the left, where or what state on the
+   right, so a long folder list stays readable at a glance */
+.pcal-palette-row {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+}
+
+.pcal-palette-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-palette-hint {
+	flex-shrink: 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+/* the search window shows the query it is building, so the dialog teaches
+   the syntax rather than hiding it */
+.pcal-search-preview {
+	padding: 8px 10px;
+	border-radius: 6px;
+	background: var(--background-secondary);
+	border-left: 3px solid var(--pcal-mail-blue, #0f6cbd);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	overflow-wrap: anywhere;
+}
+
+.pcal-search-preview.is-empty {
+	color: var(--text-faint);
+	font-style: italic;
+	border-left-color: var(--background-modifier-border);
+}
+
+/* the Folders window */
+.pcal-folders-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.pcal-folders-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-folders-row.is-hidden-folder {
+	opacity: 0.55;
+}
+
+.pcal-folders-mid {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-folders-name {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-folders-counts {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.pcal-folders-row .pcal-people-acts {
+	opacity: 0;
+}
+
+.pcal-folders-row:hover .pcal-people-acts {
+	opacity: 1;
+}
+
+.pcal-folders-row .pcal-people-acts button:disabled {
+	opacity: 0.3;
+	cursor: default;
+}
+
+/* the Outlook notes window */
+.pcal-notes-list {
+	max-height: 420px;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px;
+}
+
+.pcal-notes-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 9px;
+	padding: 6px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.pcal-notes-row:hover,
+.pcal-notes-row.is-open {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-notes-mid {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-notes-title {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-notes-sub {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* an opened note shows its whole text, wrapped and scrollable */
+.pcal-notes-body {
+	margin-top: 6px;
+	padding: 8px 10px;
+	max-height: 200px;
+	overflow-y: auto;
+	border-radius: 6px;
+	background: var(--background-secondary);
+	border-left: 3px solid #e8c33d;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.pcal-notes-row .pcal-people-acts {
+	opacity: 0;
+}
+
+.pcal-notes-row:hover .pcal-people-acts,
+.pcal-notes-row.is-open .pcal-people-acts {
+	opacity: 1;
+}
+
+/* the Tasks window */
+.pcal-tasks-head,
+.pcal-tasks-add {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.pcal-tasks-add input[type="text"] {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-tasks-list {
+	max-height: 240px;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px;
+	margin-bottom: 4px;
+}
+
+.pcal-tasks-row {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 5px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.pcal-tasks-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-tasks-tick {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.pcal-tasks-tick.is-flag {
+	color: var(--color-red, #c0392b);
+}
+
+.pcal-tasks-tick .svg-icon {
 	width: 16px;
 	height: 16px;
+}
+
+.pcal-tasks-mid {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-tasks-title {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-tasks-row.is-done .pcal-tasks-title {
+	text-decoration: line-through;
+	color: var(--text-faint);
+}
+
+.pcal-tasks-due {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.pcal-tasks-due.is-late {
+	color: var(--color-red, #c0392b);
+}
+
+/* the People window */
+.pcal-people-search {
+	width: 100%;
+	margin-bottom: 10px;
+}
+
+.pcal-people-list {
+	max-height: 460px;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px;
+}
+
+.pcal-people-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 5px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.pcal-people-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-people-mid {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-people-name {
+	display: flex;
+	align-items: baseline;
+	gap: 7px;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* which names came from the address book and which were inferred */
+.pcal-people-saved {
+	flex-shrink: 0;
+	padding: 0 6px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--pcal-mail-blue, #0f6cbd) 16%, transparent);
+	color: var(--pcal-mail-blue, #0f6cbd);
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.pcal-people-sub {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* the actions stay quiet until the row is under the pointer */
+.pcal-people-acts {
+	display: flex;
+	gap: 1px;
+	flex-shrink: 0;
+	opacity: 0;
+}
+
+.pcal-people-row:hover .pcal-people-acts,
+.pcal-people-row:focus-within .pcal-people-acts {
+	opacity: 1;
+}
+
+/* the calendar search's results, which live in the window rather than
+   replacing the calendar behind it */
+.pcal-eventsearch-results {
+	max-height: 320px;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px;
+}
+
+.pcal-eventsearch-row {
+	display: flex;
+	gap: 10px;
+	padding: 5px 8px;
+	border-radius: 5px;
+	cursor: pointer;
+}
+
+.pcal-eventsearch-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-eventsearch-when {
+	flex-shrink: 0;
+	width: 128px;
+	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
+	white-space: nowrap;
+}
+
+.pcal-eventsearch-mid {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-eventsearch-title {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-eventsearch-sub {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* the event window: its fields are Settings rows, so it only needs room and
+   a description that behaves like the compose editor */
+.pcal-event-desc-label {
+	margin: 14px 0 4px;
+}
+
+.pcal-event-desc {
+	min-height: 120px;
+	max-height: 260px;
+	overflow-y: auto;
+}
+
+/* the compose window: header rows, a bar, then an editor that takes the rest
+   of whatever height the window has been given */
+.pcal-compose-window .modal-content.pcal-compose {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.pcal-compose-fromrow {
+	align-items: center;
+}
+
+.pcal-compose-fromrow select {
+	max-width: 280px;
+}
+
+.pcal-compose-fromname {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+/* Bcc rides at the end of the To row, out of the way until wanted */
+.pcal-bcc-toggle {
+	flex-shrink: 0;
+	margin-left: 6px;
+	padding: 2px 9px;
+	height: auto;
+	font-size: var(--font-ui-smaller);
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.pcal-bcc-toggle.is-active,
+.pcal-bcc-toggle:hover {
+	color: var(--text-normal);
+	border-color: var(--interactive-accent);
+}
+
+.pcal-compose-bar {
+	flex-wrap: wrap;
+}
+
+.pcal-compose-bar-sep {
+	width: 1px;
+	align-self: stretch;
+	margin: 2px 5px;
+	background: var(--background-modifier-border);
+}
+
+.pcal-compose-window .pcal-compose-editor {
+	flex: 1;
+	min-height: 160px;
+}
+
+.pcal-compose-editor blockquote {
+	margin: 6px 0 6px 10px;
+	padding-left: 10px;
+	border-left: 2px solid var(--background-modifier-border);
+	color: var(--text-muted);
+}
+
+/* Send leads and looks like it; Discard sits away from everything else */
+.pcal-compose-btns {
+	align-items: center;
+}
+
+.pcal-compose-btns .pcal-send-btn {
+	min-width: 96px;
+	font-weight: var(--font-semibold);
+}
+
+.pcal-compose-btns-gap {
+	flex: 1;
+}
+
+/* files attached to an outgoing message: the same chips the reading pane
+   uses, so an attachment looks the same going out as coming in */
+.pcal-compose-files {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 8px 0 0;
+}
+
+.pcal-mail-att.pcal-compose-file {
+	cursor: default;
+}
+
+.pcal-compose-file-x {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	margin-left: auto;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+
+.pcal-compose-file-x:hover {
+	color: var(--text-error, #c0392b);
+}
+
+.pcal-compose-file-x .svg-icon {
+	width: 14px;
+	height: 14px;
+}
+
+.pcal-compose-files-total {
+	width: 100%;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.pcal-compose-files-total.is-over {
+	color: var(--text-error, #c0392b);
+}
+
+/* the undo-send notice: the message on one line, the way out beside it */
+.pcal-undo-notice {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.pcal-undo-notice button {
+	flex-shrink: 0;
+	padding: 2px 10px;
+	height: auto;
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+/* recipient autocomplete. It hangs off document.body rather than the modal
+   so the modal's own overflow cannot clip it, which means it needs a z-index
+   above the modal it belongs to. */
+.pcal-addr-suggest {
+	position: fixed;
+	z-index: var(--layer-menu, 1000);
+	max-height: 260px;
+	overflow-y: auto;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	box-shadow: var(--shadow-s, 0 4px 14px rgba(0, 0, 0, 0.2));
+	padding: 4px;
+}
+
+.pcal-addr-row {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 5px 8px;
+	border-radius: 5px;
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+}
+
+.pcal-addr-row:hover,
+.pcal-addr-row.is-active {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-addr-name {
+	flex-shrink: 0;
+	color: var(--text-normal);
+}
+
+.pcal-addr-email {
+	flex: 1;
+	min-width: 0;
+	text-align: right;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* the "later" picker, shared by snooze and send later */
+.pcal-when button.pcal-when-row {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	width: 100%;
+	text-align: left;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	padding: 7px 10px;
+	margin: 0 0 2px;
+	height: auto;
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.pcal-when button.pcal-when-row:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--background-modifier-border);
+}
+
+.pcal-when-label {
+	flex: 1;
+	min-width: 0;
+	color: var(--text-normal);
+}
+
+.pcal-when-time {
+	flex-shrink: 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.pcal-when-custom {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.pcal-when-head {
+	width: 100%;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.pcal-when-custom input {
+	flex: 1;
+	min-width: 170px;
+}
+
+.pcal-when-note {
+	margin-top: 14px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	line-height: 1.45;
+}
+
+/* the unsubscribe link beside a bulk sender's name */
+.pcal-unsub {
+	margin-left: 10px;
+	font-size: var(--font-ui-smaller);
+	color: var(--pcal-mail-blue, #0f6cbd);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	cursor: pointer;
+}
+
+.pcal-unsub:hover {
+	color: var(--pcal-mail-blue-hover, #1a7ad4);
+}
+
+/* the unread count on the mail ribbon icon */
+.side-dock-ribbon-action.pcal-has-unread {
+	position: relative;
+}
+
+.side-dock-ribbon-action.pcal-has-unread::after {
+	content: attr(data-pcal-unread);
+	position: absolute;
+	top: 2px;
+	right: 1px;
+	min-width: 15px;
+	padding: 0 3px;
+	border-radius: 8px;
+	background: #c0392b;
+	color: #ffffff;
+	font-size: 9px;
+	font-weight: 700;
+	line-height: 15px;
+	text-align: center;
+	pointer-events: none;
+}
+
+/* a new-mail notice reads as a message, and opens it when clicked */
+.pcal-newmail-from {
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+}
+
+.pcal-newmail-subject {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+	-webkit-box-orient: vertical;
+}
+
+.notice.pcal-newmail-clickable {
+	cursor: pointer;
+}
+
+/* the band that says an out-of-office is answering for you */
+.pcal-mail-ooo-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	background: color-mix(in srgb, var(--pcal-mail-blue, #0f6cbd) 12%, transparent);
+	border-bottom: 1px solid color-mix(in srgb, var(--pcal-mail-blue, #0f6cbd) 35%, transparent);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
+
+.pcal-ooo-bar-icon {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--pcal-mail-blue, #0f6cbd);
+}
+
+.pcal-ooo-bar-icon .svg-icon {
+	width: 15px;
+	height: 15px;
+}
+
+.pcal-ooo-bar-text {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-mail-ooo-bar button {
+	flex-shrink: 0;
+	padding: 2px 10px;
+	height: auto;
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+.pcal-ooo textarea.pcal-ooo-text {
+	width: 100%;
+	min-width: 260px;
+	resize: vertical;
+}
+
+/* the print frame carries its own document; it is never meant to be seen,
+   only handed to the printer */
+/* ---- the print window ---- */
+
+.modal-content.pcal-print-wrap {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.pcal-print {
+	display: flex;
+	gap: 14px;
+	flex: 1;
+	min-height: 0;
+}
+
+.pcal-print-side {
+	width: 200px;
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	overflow-y: auto;
+}
+
+.pcal-print-label {
+	font-size: var(--font-ui-smaller);
+	font-weight: 600;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	margin-top: 8px;
+}
+
+.pcal-print-label:first-child {
+	margin-top: 0;
+}
+
+.pcal-print-styles {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.pcal-print-styles button,
+.pcal-print-orient button {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	justify-content: flex-start;
+	text-align: left;
+	width: 100%;
+	height: auto;
+	padding: 7px 10px;
+}
+
+.pcal-print-styleicon {
+	display: flex;
+	flex: 0 0 auto;
+}
+
+.pcal-print-styleicon .svg-icon {
+	width: 16px;
+	height: 16px;
+}
+
+.pcal-print-stylehint {
+	margin-left: auto;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.pcal-print-styles button.is-active,
+.pcal-print-orient button.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.pcal-print-styles button.is-active .pcal-print-stylehint {
+	color: var(--text-on-accent);
+	opacity: 0.8;
+}
+
+.pcal-print-orient {
+	display: flex;
+	gap: 6px;
+}
+
+.pcal-print-orient button {
+	justify-content: center;
+	flex: 1;
+	padding: 7px 6px;
+}
+
+.pcal-print-paper {
+	flex: 0 0 auto;
+	width: 11px;
+	height: 14px;
+	border: 1.5px solid currentColor;
+	border-radius: 2px;
+	opacity: 0.75;
+}
+
+.pcal-print-paper.is-wide {
+	width: 14px;
+	height: 11px;
+}
+
+.pcal-print-note {
+	margin-top: auto;
+	padding-top: 12px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	line-height: 1.4;
+}
+
+/* the stage is the desk the sheet lies on, so the page reads as a page */
+.pcal-print-stage {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	overflow: auto;
+	padding: 14px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-secondary);
+}
+
+.pcal-print-preview {
+	width: 100%;
+	aspect-ratio: 8.5 / 11;
+	flex: 0 0 auto;
+	border: 0;
+	background: #fff;
+	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+}
+
+.pcal-print-stage.is-landscape .pcal-print-preview {
+	aspect-ratio: 11 / 8.5;
+}
+
+/* the signature editor: the list and its buttons across the top, the editor
+   under them, the per-account choices at the foot */
+/* a modal that can be moved and resized: positioned rather than centered,
+   with the browser's own resize corner and a title bar you can grab */
+.modal.pcal-movable {
+	position: fixed;
+	margin: 0;
+	max-width: none;
+	max-height: none;
+	resize: both;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+}
+
+.modal.pcal-movable .modal-content {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.pcal-movable-grip {
+	cursor: move;
+	user-select: none;
+}
+
+/* the event card is a floating panel rather than a dialog, so it takes the
+   resize corner without the dialog layout that goes with .modal */
+.pcal-card.pcal-movable {
+	resize: both;
+	overflow: auto;
+	max-width: none;
+}
+
+/* its heading is the grip, so it should look grabbable but its text still
+   selectable-looking text below it */
+.pcal-card .pcal-card-head.pcal-movable-grip {
+	cursor: move;
+}
+
+.pcal-sig-window {
+	width: min(760px, 92vw);
+}
+
+.pcal-sig-top {
+	display: flex;
+	gap: 10px;
+	align-items: flex-start;
+}
+
+/* the list is a real list box, tall enough to stand beside its own buttons:
+   sized to content it was one row high next to a column of three, which left
+   a hole where the rest of the list should be */
+.pcal-sig-list {
+	flex: 1;
+	min-width: 0;
+	min-height: 108px;
+	max-height: 180px;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 4px;
+	background: var(--background-primary);
+}
+
+.pcal-sig-item {
+	padding: 4px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-sig-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-sig-item.is-current {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.pcal-sig-side {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	flex-shrink: 0;
+	width: 96px;
+}
+
+.pcal-sig-side button {
+	width: 100%;
+	cursor: pointer;
+}
+
+/* the account and signature pickers hold real names ("Steve & Deanna"), so
+   they get room rather than clipping the list they open */
+.pcal-sig .setting-item-control select {
+	min-width: 190px;
+}
+
+.pcal-sig-side button:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.pcal-sig-editor {
+	min-height: 170px;
+	max-height: 320px;
+	overflow-y: auto;
+}
+
+.pcal-sig-editor img {
+	max-width: 100%;
+}
+
+/* the category manager */
+.pcal-cat-row {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-cat-swatch {
+	width: 13px;
+	height: 13px;
+	border-radius: 3px;
+	flex-shrink: 0;
+	display: inline-block;
+	margin-right: 8px;
+}
+
+.pcal-cat-name {
+	flex: 1;
+	min-width: 0;
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-cat-row button {
+	flex-shrink: 0;
+	padding: 2px 10px;
+	height: auto;
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+/* the rules list */
+.pcal-rule-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-rule-row.is-off {
+	opacity: 0.6;
+}
+
+.pcal-rule-text {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-rule-name {
+	color: var(--text-normal);
+	font-weight: var(--font-medium);
+}
+
+.pcal-rule-what {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.pcal-rule-warn {
+	margin-top: 2px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+/* the live sentence under the rule editor */
+.pcal-rule-summary {
+	margin: 14px 0 4px;
+	padding: 10px 12px;
+	border-radius: 8px;
+	background: var(--background-secondary);
+	border-left: 3px solid var(--pcal-mail-blue, #0f6cbd);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+/* the snoozed list */
+.pcal-snoozed-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 7px 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-snoozed-text {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-snoozed-subject {
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-snoozed-when {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+/* the shortcut card */
+.pcal-shortcuts-head {
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-faint);
+	margin: 12px 0 4px;
+}
+
+.pcal-shortcuts-head:first-child {
+	margin-top: 0;
+}
+
+.pcal-shortcuts-row {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	padding: 2px 0;
+}
+
+.pcal-shortcuts-key {
+	flex-shrink: 0;
+	width: 108px;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+}
+
+.pcal-shortcuts-what {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.pcal-shortcuts-note {
+	margin-top: 14px;
+	padding-top: 10px;
+	border-top: 1px solid var(--background-modifier-border);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+/* the attachment menu takes the chip's own width, so it reads as the chip
+   opening rather than a menu appearing next to it */
+.menu.pcal-att-menu {
+	min-width: var(--pcal-att-menu-w, 200px);
+	width: var(--pcal-att-menu-w, 200px);
+}
+
+/* one button for the whole bar, so a mail with eight files is one click */
+.pcal-mail-att-all {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 7px;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.pcal-mail-att-all:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-accent);
+	color: var(--text-normal);
+}
+
+.pcal-mail-att-all-icon {
+	display: flex;
+	align-items: center;
+}
+
+.pcal-mail-att-all-icon .svg-icon {
+	width: 15px;
+	height: 15px;
 }
 
 .pcal-mail-att-text {
@@ -1921,10 +3216,6 @@ button.pcal-card-more .svg-icon {
 	overflow-y: auto;
 	border-right: 1px solid var(--background-modifier-border);
 	padding: 6px 4px;
-}
-
-.pcal-folders-hidden .pcal-mail-folders {
-	display: none;
 }
 
 .pcal-folder-account {
@@ -2083,10 +3374,33 @@ button.pcal-card-more .svg-icon {
 	padding: 4px 12px;
 }
 
+/* row density, the way every mail client offers it. One property drives the
+   padding and the avatar together, so a density is a single decision rather
+   than a pile of overrides. Cozy is the middle and the default. */
+.pcal-mail-list {
+	--pcal-row-pad: 5px;
+	--pcal-avatar: 32px;
+}
+
+.pcal-mail-list.density-compact {
+	--pcal-row-pad: 2px;
+	--pcal-avatar: 26px;
+}
+
+.pcal-mail-list.density-cozy {
+	--pcal-row-pad: 5px;
+	--pcal-avatar: 32px;
+}
+
+.pcal-mail-list.density-comfortable {
+	--pcal-row-pad: 9px;
+	--pcal-avatar: 36px;
+}
+
 .pcal-mail-row {
 	display: flex;
 	gap: 8px;
-	padding: 7px 12px 7px 10px;
+	padding: var(--pcal-row-pad, 5px) 12px var(--pcal-row-pad, 5px) 10px;
 	border-bottom: 1px solid var(--background-modifier-border);
 	cursor: default;
 }
@@ -2115,7 +3429,8 @@ button.pcal-card-more .svg-icon {
 .pcal-mail-top {
 	display: flex;
 	align-items: baseline;
-	gap: 8px;
+	gap: 6px;
+	line-height: 1.35;
 }
 
 .pcal-mail-from {
@@ -2123,6 +3438,7 @@ button.pcal-card-more .svg-icon {
 	min-width: 0;
 	font-size: var(--font-ui-small);
 	color: var(--text-normal);
+	font-weight: var(--font-medium);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -2133,21 +3449,302 @@ button.pcal-card-more .svg-icon {
 	font-weight: var(--font-semibold);
 }
 
+/* the date sits at the end of the subject line, right-aligned, and keeps its
+   own faint weight and color even on an unread row where the subject around
+   it is bold and accented */
 .pcal-mail-time {
+	flex-shrink: 0;
+	margin-left: auto;
+	padding-left: 8px;
 	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
 	color: var(--text-faint);
 	white-space: nowrap;
 }
 
-.pcal-mail-subject {
-	font-size: var(--font-ui-small);
+/* the split inbox's section bands. Sticky so you always know which part of
+   the inbox you are looking at while scrolling a long section. */
+.pcal-mail-section {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 12px 5px 8px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-muted);
+	cursor: pointer;
+	user-select: none;
+}
+
+.pcal-mail-section:hover {
 	color: var(--text-normal);
-	white-space: nowrap;
+}
+
+.pcal-mail-section-twist {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--text-faint);
+}
+
+.pcal-mail-section-twist .svg-icon {
+	width: 14px;
+	height: 14px;
+}
+
+.pcal-mail-section-name {
+	flex: 1;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-mail-section-count {
+	flex-shrink: 0;
+	font-weight: var(--font-normal);
+	letter-spacing: 0;
+	text-transform: none;
+	color: var(--text-faint);
+}
+
+/* the conversation twisty: a fixed column ahead of the avatar so every row
+   lines up whether or not it heads a thread. An ungrouped list drops the
+   column entirely rather than indenting every row for nothing. */
+.pcal-mail-twisty {
+	width: 14px;
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+
+.pcal-mail-list:not(.has-threads) .pcal-mail-twisty {
+	display: none;
+}
+
+.pcal-mail-twisty:hover {
+	color: var(--text-normal);
+}
+
+.pcal-mail-twisty .svg-icon {
+	width: 14px;
+	height: 14px;
+}
+
+/* replies sit under their conversation head, indented off the twisty. The
+   indent is all the nesting they need: a background tint here would sit at
+   the same specificity as the hover and selected rules and quietly beat
+   them, since it comes later in the file. */
+.pcal-mail-row.is-threadchild {
+	padding-left: 26px;
+}
+
+/* the message count on a conversation row */
+.pcal-mail-count {
+	flex-shrink: 0;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-medium);
+	color: var(--text-muted);
+	background: var(--background-modifier-border);
+	border-radius: 9px;
+	padding: 0 6px;
+	line-height: 1.5;
+}
+
+/* the whole thread listed in the reading pane, so a back-and-forth reads
+   without going back to the list for every reply */
+.pcal-mail-convo {
+	margin: 10px 0 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.pcal-mail-convo-head {
+	padding: 5px 10px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-mail-convo-item {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 5px 10px;
+	font-size: var(--font-ui-small);
+	cursor: pointer;
+}
+
+.pcal-mail-convo-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-mail-convo-item.is-current {
+	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+	cursor: default;
+	box-shadow: inset 3px 0 0 var(--pcal-mail-blue, #0f6cbd);
+}
+
+.pcal-mail-convo-item.is-unread .pcal-mail-convo-from {
+	font-weight: var(--font-bold);
+}
+
+.pcal-mail-convo-from {
+	flex: 1;
+	min-width: 0;
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-mail-convo-time {
+	flex-shrink: 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+/* attachment, flag, and importance marks at the end of the sender line */
+.pcal-mail-marks {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	align-self: center;
+	gap: 4px;
+	margin-left: auto;
+}
+
+.pcal-mail-marks .pcal-mail-clip,
+.pcal-mail-marks .pcal-mail-flagmark {
+	display: flex;
+	align-items: center;
+}
+
+.pcal-mail-flagmark {
+	cursor: pointer;
+}
+
+.pcal-mail-flagmark .svg-icon {
+	width: 11px;
+	height: 11px;
+	color: var(--color-red, #c0392b);
+	vertical-align: -1px;
+}
+
+.pcal-mail-flagmark:hover .svg-icon {
+	color: var(--text-normal);
+}
+
+/* a category as a small square in the row's marks, Outlook's own shape */
+.pcal-mail-cat {
+	width: 9px;
+	height: 9px;
+	border-radius: 2px;
+	flex-shrink: 0;
+}
+
+/* and as a named pill in the reading pane, where there is room for words */
+.pcal-mail-cats {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 6px 0 2px;
+}
+
+.pcal-mail-cat-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 1px 9px 1px 7px;
+	border-radius: 10px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	background: color-mix(in srgb, var(--pcal-cat-color, #8a8886) 18%, transparent);
+	border: 1px solid color-mix(in srgb, var(--pcal-cat-color, #8a8886) 45%, transparent);
+}
+
+.pcal-mail-cat-pill::before {
+	content: "";
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+	background: var(--pcal-cat-color, #8a8886);
+}
+
+.pcal-mail-bang {
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-bold);
+	color: var(--color-red, #c0392b);
+	line-height: 1;
+}
+
+/* Mail blue, deliberately not the vault's accent. Blue is a mail convention
+   people read without thinking, and an Obsidian theme's accent is whatever
+   the theme wants (purple, out of the box), which reads as something else
+   entirely. Redefining the accent variables on the mail view's own root
+   turns every accent-driven control inside it blue in one move: the New mail
+   and Reply buttons, the unread bar, the selected row and folder, the focus
+   rings. Nothing outside the mail view is touched, so the calendar and the
+   rest of the vault keep the theme's own accent. */
+.pcal-mail-root {
+	--pcal-mail-blue: #0f6cbd;
+	--pcal-mail-blue-hover: #1a7ad4;
+	--accent-h: 208;
+	--accent-s: 85%;
+	--accent-l: 40%;
+	--color-accent: var(--pcal-mail-blue);
+	--color-accent-1: var(--pcal-mail-blue-hover);
+	--color-accent-2: #0a568f;
+	--interactive-accent: var(--pcal-mail-blue);
+	--interactive-accent-hover: var(--pcal-mail-blue-hover);
+	--text-accent: var(--pcal-mail-blue);
+	--text-accent-hover: var(--pcal-mail-blue-hover);
+	--text-on-accent: #ffffff;
+	--background-modifier-active-hover: rgba(15, 108, 189, 0.13);
+}
+
+.theme-dark .pcal-mail-root {
+	--pcal-mail-blue: #6cb8f6;
+	--pcal-mail-blue-hover: #8ecbff;
+	--accent-l: 60%;
+	--color-accent-2: #4a9ce0;
+	--text-on-accent: #0b1c2c;
+	--background-modifier-active-hover: rgba(108, 184, 246, 0.16);
+}
+
+/* the subject carries that blue on every row, read or unread, which is how
+   Outlook's list reads: the sender in text color, the subject in blue.
+   Unread only adds weight on top of it, so the two states stay distinct. */
+.pcal-mail-subject {
+	font-size: var(--font-ui-small);
+	color: var(--pcal-mail-blue, #0f6cbd);
+	line-height: 1.35;
+	white-space: nowrap;
+	overflow: hidden;
 	display: flex;
 	align-items: baseline;
 	gap: 4px;
+}
+
+/* the subject itself takes the ellipsis, since a flex container cannot: it
+   has to be the child that overflows */
+.pcal-mail-subject-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .pcal-mail-clip .svg-icon {
@@ -2157,17 +3754,28 @@ button.pcal-card-more .svg-icon {
 	vertical-align: -1px;
 }
 
+/* the preview clamps to however many lines the Message preview setting asks
+   for; one line keeps the old single-line ellipsis exactly as it was */
 .pcal-mail-preview {
 	font-size: var(--font-ui-smaller);
 	color: var(--text-faint);
-	white-space: nowrap;
+	line-height: 1.35;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	display: -webkit-box;
+	-webkit-line-clamp: var(--pcal-preview-lines, 1);
+	line-clamp: var(--pcal-preview-lines, 1);
+	-webkit-box-orient: vertical;
+	white-space: normal;
+	overflow-wrap: anywhere;
 }
 
 /* quick actions on a message row: reply, read toggle, archive */
-/* the quick actions take the timestamp's spot on hover, Outlook's swap,
-   instead of reserving a blank column of their own */
+/* the quick actions take the sender line's right end on hover, Outlook's
+   swap, instead of reserving a blank column of their own. The marks that
+   live there step aside and the sender gets room reserved so a long name
+   ellipsizes rather than running under the buttons; the date is a line down
+   and stays put, which is what Outlook does too. */
 .pcal-mail-actions {
 	display: none;
 	position: absolute;
@@ -2183,9 +3791,15 @@ button.pcal-card-more .svg-icon {
 	display: flex;
 }
 
-.pcal-mail-row:hover .pcal-mail-time,
-.pcal-mail-row.is-selected .pcal-mail-time {
+.pcal-mail-row:hover .pcal-mail-marks,
+.pcal-mail-row.is-selected .pcal-mail-marks {
 	visibility: hidden;
+}
+
+/* room for the four quick actions: reply all, flag, read toggle, delete */
+.pcal-mail-row:hover .pcal-mail-top,
+.pcal-mail-row.is-selected .pcal-mail-top {
+	padding-right: 98px;
 }
 
 @media (hover: none) {
@@ -2194,8 +3808,12 @@ button.pcal-card-more .svg-icon {
 		position: static;
 	}
 
-	.pcal-mail-row .pcal-mail-time {
+	.pcal-mail-row .pcal-mail-marks {
 		visibility: visible;
+	}
+
+	.pcal-mail-row .pcal-mail-top {
+		padding-right: 0;
 	}
 }
 
@@ -2299,9 +3917,11 @@ button.pcal-card-more .svg-icon {
 	font-size: var(--font-ui-medium);
 }
 
+/* touch wants a taller target than any density asks for, so the drill adds
+   to the chosen density rather than replacing it */
 .pcal-mail-drill .pcal-mail-row {
-	padding-top: 10px;
-	padding-bottom: 10px;
+	padding-top: calc(var(--pcal-row-pad, 5px) + 5px);
+	padding-bottom: calc(var(--pcal-row-pad, 5px) + 5px);
 }
 
 /* ---------------- attendee availability ---------------- */
@@ -2913,4 +4533,10 @@ body.theme-light .notice:not(.pw-self-styled) {
 
 body.theme-light .notice:not(.pw-self-styled) a {
 	color: var(--text-accent);
+}
+
+/* a cold message shows the line the list already knew while the body travels */
+.pcal-mail-read-pending {
+	color: var(--text-muted);
+	white-space: pre-wrap;
 }

@@ -32,6 +32,7 @@ import {
 	graphMailToPC,
 	mergeDeltaMessages,
 	orderFolderTree,
+	isSystemFolder,
 	subjectToEventTitle,
 	googleTimesBody,
 	googleToPC,
@@ -57,6 +58,63 @@ import {
 	slotConflict,
 	avatarColor,
 	avatarInitials,
+	attachmentBadge,
+	fmtAttachmentSize,
+	mimeForExtension,
+	groupThreads,
+	printableHtml,
+	printableTableHtml,
+	printableAgendaHtml,
+	printableMonthHtml,
+	pageRule,
+	scaledPt,
+	PRINT_SCALES,
+	signatureFor,
+	extractInlineImages,
+	migrateSignature,
+	newArrivals,
+	arrivalSummary,
+	automatedSender,
+	sectionOf,
+	splitSections,
+	toGraphDateTime,
+	fromGraphDateTime,
+	categoryColor,
+	CATEGORY_COLOR_NAMES,
+	toggleCategory,
+	replaceCategory,
+	buildCategoryPatchBatch,
+	buildReadPatchBatch,
+	parseWriteBatch,
+	groupShortcuts,
+	defaultShortcutLabel,
+	Shortcut,
+	buildJournal,
+	journalMarkdown,
+	matchEvents,
+	eventQueryIsEmpty,
+	EventQuery,
+	parseUnsubscribe,
+	unsubscribePlan,
+	ruleToEdit,
+	ruleToBody,
+	ruleHasUnknownParts,
+	ruleSummary,
+	EMPTY_RULE,
+	tokenize,
+	buildQuery,
+	graphSearchText,
+	passesLocalFilters,
+	parseQuery,
+	buildIndex,
+	searchIndex,
+	IndexDoc,
+	whenPresets,
+	rankContacts,
+	mergePeople,
+	matchContacts,
+	currentAddressFragment,
+	applyAddressChoice,
 	PALETTE,
 	pickGeoHit,
 	searchFolderQuery,
@@ -371,6 +429,856 @@ eq(avatarInitials(""), "?", "empty falls back to a question mark");
 eq(avatarColor("Uber Receipts"), avatarColor("Uber Receipts"), "the avatar color is stable");
 eq(PALETTE.includes(avatarColor("Anyone At All")), true, "avatar colors come from the palette");
 
+// --- attachment badges ---
+eq(attachmentBadge("Invoice-T-258926.pdf", "application/pdf").label, "PDF", "the extension is the label");
+eq(attachmentBadge("Invoice.pdf", "application/pdf").color, attachmentBadge("other.PDF", "").color, "the extension match ignores case");
+eq(attachmentBadge("Q3.xlsx", "").color === attachmentBadge("Q3.docx", "").color, false, "Excel and Word take different colors");
+eq(attachmentBadge("deck.pptx", "").label, "PPTX", "a four-character extension survives whole");
+eq(attachmentBadge("archive.tar.gz", "").label, "GZ", "the last extension is the one that counts");
+eq(attachmentBadge("image001", "image/png").label, "IMG", "no extension falls back to the MIME family");
+eq(attachmentBadge("mystery", "application/x-nonsense").label, "FILE", "an unreadable type still gets a badge");
+eq(attachmentBadge("mystery", "").color, attachmentBadge("thing.qqq", "").color, "unknowns share the neutral gray");
+eq(attachmentBadge("Report.docx", "").label.length <= 4, true, "labels never exceed four characters");
+eq(fmtAttachmentSize(0), "1 KB", "a file that exists never reads as 0 KB");
+eq(fmtAttachmentSize(72704), "71 KB", "kilobytes round to whole numbers");
+eq(fmtAttachmentSize(1048576), "1.0 MB", "a megabyte crosses to one decimal");
+eq(fmtAttachmentSize(5872025), "5.6 MB", "megabytes keep one decimal");
+eq(fmtAttachmentSize(2147483648), "2.0 GB", "gigabytes have their own unit");
+eq(mimeForExtension("pdf"), "application/pdf", "an extension resolves to its content type");
+eq(mimeForExtension("PDF"), "application/pdf", "whatever the case");
+eq(mimeForExtension(".png"), "image/png", "a leading dot is tolerated");
+eq(mimeForExtension("xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "the Office types are the long ones");
+eq(mimeForExtension("qqq"), "application/octet-stream", "an unknown extension falls back to bytes");
+eq(mimeForExtension(""), "application/octet-stream", "and so does no extension at all");
+
+// --- conversation threading ---
+{
+	const mail = (id: string, conv: string | undefined, ms: number, from: string, extra: Partial<PCMail> = {}, accountId = "a1"): PCMail => ({
+		id,
+		accountId,
+		accountLabel: "Work",
+		from,
+		fromAddress: `${from.toLowerCase()}@x.com`,
+		subject: "Re: Tank Management",
+		preview: "",
+		receivedMs: ms,
+		unread: false,
+		conversationId: conv,
+		...extra,
+	});
+	const list = [
+		mail("m3", "c1", 3000, "Deanna", { unread: true }),
+		mail("m2", "c2", 2000, "Chris"),
+		mail("m1", "c1", 1000, "Steve", { hasAttachments: true }),
+		mail("m0", "c1", 500, "Deanna", { flagged: true, priority: true }),
+	];
+	const t = groupThreads(list);
+	eq(t.length, 2, "four messages over two conversations give two threads");
+	eq(t[0].messages.map((m) => m.id).join(","), "m3,m1,m0", "a thread holds its messages newest first");
+	eq(t[0].latest.id, "m3", "the newest message heads the thread");
+	eq(t[1].messages.length, 1, "a conversation of one is still a thread");
+	eq(t[0].unread, 1, "the thread counts its unread");
+	eq(t[0].senders.join(","), "Deanna,Steve", "senders are distinct, newest first");
+	eq(t[0].hasAttachments, true, "an attachment anywhere in the thread rolls up");
+	eq(t[0].flagged && t[0].priority, true, "so do the flag and the importance mark");
+	eq(t[1].hasAttachments || t[1].flagged || t[1].priority, false, "and a thread with none of them rolls up nothing");
+
+	// order follows the list it was handed, so whatever sorted it still wins
+	eq(t.map((x) => x.latest.id).join(","), "m3,m2", "threads sit where their first message sat");
+	const asc = groupThreads([...list].reverse());
+	eq(asc.map((x) => x.latest.id).join(","), "m3,m2", "an oldest-first list still names the newest as latest");
+	eq(asc[0].messages[0].id, "m3", "and still orders the thread newest first");
+
+	// a cache written before threading has no conversation ids at all
+	const legacy = groupThreads([mail("x1", undefined, 2000, "Ana"), mail("x2", undefined, 1000, "Bo")]);
+	eq(legacy.length, 2, "messages with no conversation id are threads of one");
+
+	// conversation ids are only unique inside a mailbox
+	const cross = groupThreads([mail("y1", "shared", 2000, "Ana", {}, "a1"), mail("y2", "shared", 1000, "Bo", {}, "a2")]);
+	eq(cross.length, 2, "the same conversation id in two accounts does not braid them together");
+
+	eq(groupThreads([]).length, 0, "an empty list gives no threads");
+}
+
+// --- automatic replies: the date round trip ---
+{
+	const ms = Date.UTC(2026, 7, 5, 14, 30, 0);
+	const g = toGraphDateTime(ms);
+	eq(g.timeZone, "UTC", "times go out absolute, in the one zone spelling nothing argues with");
+	eq(g.dateTime, "2026-08-05T14:30:00", "and as a plain wall time with no zone suffix");
+	eq(fromGraphDateTime(g), ms, "a UTC value round trips exactly");
+	eq(fromGraphDateTime({ dateTime: "2026-08-05T14:30:00.0000000", timeZone: "UTC" }), ms, "Graph's seven-digit fraction parses");
+	eq(fromGraphDateTime({ dateTime: "2026-08-05T14:30:00Z", timeZone: "UTC" }), ms, "and so does one that already carries a Z");
+	eq(fromGraphDateTime({ dateTime: "2026-08-05T14:30:00", timeZone: "GMT" }), ms, "GMT is read as UTC");
+
+	// a non-UTC zone is read as this machine's wall time, the best guess left
+	const local = fromGraphDateTime({ dateTime: "2026-08-05T14:30:00", timeZone: "Central Standard Time" });
+	eq(local, new Date(2026, 7, 5, 14, 30, 0).getTime(), "an unrecognized zone reads as local wall time");
+
+	eq(fromGraphDateTime(undefined), null, "nothing parses to nothing");
+	eq(fromGraphDateTime({ dateTime: "", timeZone: "UTC" }), null, "and so does an empty value");
+	eq(fromGraphDateTime({ dateTime: "not a date", timeZone: "UTC" }), null, "an unreadable value is null, not NaN");
+	// the trip a user actually takes: pick a local time, store it, read it back
+	const picked = new Date(2026, 11, 24, 17, 0, 0).getTime();
+	eq(fromGraphDateTime(toGraphDateTime(picked)), picked, "a local time survives the round trip through UTC");
+}
+
+// --- categories ---
+{
+	eq(categoryColor("preset0"), "#e74856", "the first preset is Outlook's red");
+	eq(categoryColor("preset7"), "#0078d4", "and the eighth its blue");
+	eq(categoryColor("preset24"), "#93003f", "the last preset resolves");
+	eq(categoryColor("PRESET0"), "#e74856", "the slot name is read whatever the case");
+	eq(categoryColor("preset25"), "#8a8886", "a slot past the end falls back to gray");
+	eq(categoryColor("none"), "#8a8886", "a category with no color set reads gray");
+	eq(categoryColor(""), "#8a8886", "and so does nothing at all");
+	eq(new Set([0, 7, 12, 19, 24].map((n) => categoryColor(`preset${n}`))).size, 5, "the presets are distinct colors");
+	eq(CATEGORY_COLOR_NAMES.length, 25, "every preset has a name to show in a picker");
+	eq(CATEGORY_COLOR_NAMES[0], "Red", "and the names line up with Outlook's own order");
+	eq(CATEGORY_COLOR_NAMES[7], "Blue", "at both ends of the light half");
+	eq(new Set(CATEGORY_COLOR_NAMES).size, 25, "no two colors share a name");
+
+	eq(toggleCategory(undefined, "Red"), ["Red"], "toggling onto nothing starts the list");
+	eq(toggleCategory([], "Red"), ["Red"], "and onto an empty list too");
+	eq(toggleCategory(["Red"], "Red"), [], "toggling the only one off empties it");
+	eq(toggleCategory(["Red", "Blue"], "Red"), ["Blue"], "removing one keeps the rest");
+	eq(toggleCategory(["Red", "Blue"], "Green"), ["Red", "Blue", "Green"], "adding appends, keeping the mailbox's order");
+	eq(toggleCategory(["Red"], "red"), [], "the match ignores case, as Outlook does");
+	eq(toggleCategory(["Red", "Blue"], "BLUE"), ["Red"], "whichever way the case falls");
+}
+
+// --- replacing a category everywhere ---
+{
+	eq(replaceCategory(["Old"], "Old", "New"), ["New"], "the named one is replaced");
+	eq(replaceCategory(["Red", "Old", "Blue"], "Old", "New"), ["Red", "New", "Blue"], "and keeps its place among the others");
+	eq(replaceCategory(["old"], "Old", "New"), ["New"], "the match ignores case, as Outlook does");
+	eq(replaceCategory(["Red"], "Old", "New"), ["Red"], "a message without it is left alone");
+	eq(replaceCategory(undefined, "Old", "New"), [], "and one with no categories stays empty");
+	// the case that would otherwise show a doubled label in Outlook
+	eq(replaceCategory(["Old", "New"], "Old", "New"), ["New"], "a message already carrying both does not end up with two");
+	eq(replaceCategory(["New", "Old"], "Old", "New"), ["New"], "whichever order they were in");
+
+	const items = [
+		{ id: "a", categories: ["New"] },
+		{ id: "b", categories: ["Red", "New"] },
+	];
+	const batch = buildCategoryPatchBatch(items);
+	eq(batch.requests.length, 2, "one sub-request per message");
+	eq(batch.requests[0].method, "PATCH", "written as a PATCH");
+	eq(batch.requests[0].id, "0", "keyed by index, since Graph ids are too long for the field");
+	eq(batch.requests[0].headers?.["Content-Type"], "application/json", "each sub-request carries its own content type");
+	eq((batch.requests[1].body as { categories: string[] }).categories, ["Red", "New"], "and its own new category list");
+	eq(buildCategoryPatchBatch([]).requests.length, 0, "nothing to write is an empty batch");
+
+	const readBatch = buildReadPatchBatch(["m1", "m2"], true);
+	eq(readBatch.requests.length, 2, "one sub-request per message to mark");
+	eq(readBatch.requests[0].method, "PATCH", "written as a PATCH");
+	eq((readBatch.requests[0].body as { isRead: boolean }).isRead, true, "asking for read");
+	eq((buildReadPatchBatch(["m1"], false).requests[0].body as { isRead: boolean }).isRead, false, "and unread when that is what was asked");
+	eq(buildReadPatchBatch([], true).requests.length, 0, "nothing to mark is an empty batch");
+
+	const ids = ["a", "b", "c"];
+	eq(parseWriteBatch({ responses: [{ id: "0", status: 200 }, { id: "1", status: 200 }, { id: "2", status: 200 }] }, ids).ok, ids, "all happy is all ok");
+	eq(parseWriteBatch({ responses: [{ id: "0", status: 200 }, { id: "1", status: 403 }] }, ids).failed, ["b", "c"], "a refusal and a missing answer both count as failed");
+	eq(parseWriteBatch(null, ids).failed, ids, "an unreadable reply fails everything, rather than claiming success");
+	eq(parseWriteBatch({}, ids).failed, ids, "and so does one with no responses at all");
+}
+
+// --- shortcuts ---
+{
+	const sc = (id: string, group: string, label: string): Shortcut => ({ id, group, label, kind: "url", target: "https://x.com" });
+	const groups = groupShortcuts([sc("1", "Work", "a"), sc("2", "", "b"), sc("3", "Work", "c"), sc("4", "Home", "d")]);
+	eq(groups.map((g) => g.name).join(","), ",Work,Home", "the unnamed group leads, the rest keep the order they appear in");
+	eq(groups.find((g) => g.name === "Work")?.items.length, 2, "members of a group come together");
+	eq(groupShortcuts([]).length, 0, "nothing groups into nothing");
+	eq(groupShortcuts([sc("1", "  Work  ", "a")])[0].name, "Work", "a group name is trimmed");
+
+	eq(defaultShortcutLabel("note", "Personal/Apple/Apple Leadership.md"), "Apple Leadership", "a note is named by its file");
+	eq(defaultShortcutLabel("url", "https://irely.com/"), "irely.com", "a link drops the scheme and the trailing slash");
+	eq(defaultShortcutLabel("search", "from:deanna is:unread"), "from:deanna is:unread", "a search is named by itself");
+	eq(defaultShortcutLabel("url", `https://x.com/${"a".repeat(200)}`).length <= 60, true, "a very long label is cut to fit a list");
+}
+
+// --- journal ---
+{
+	const day = "2026-08-05";
+	const at = (h: number) => msOfKey(day) + h * 3600000;
+	const mail = (id: string, from: string, subject: string, ms: number): PCMail => ({
+		id,
+		accountId: "a",
+		accountLabel: "l",
+		from,
+		fromAddress: `${id}@x.com`,
+		subject,
+		preview: "",
+		receivedMs: ms,
+		unread: false,
+	});
+	const evs: PCEvent[] = [
+		{ id: "e1", sourceId: "c", title: "Standup", startMs: at(9), endMs: at(9.5), allDay: false, attendees: ["Von", "Deanna"] },
+		{ id: "e2", sourceId: "c", title: "Skipped", startMs: at(11), endMs: at(12), allDay: false, declined: true },
+		{ id: "e3", sourceId: "c", title: "Holiday", startMs: msOfKey(day), endMs: msOfKey("2026-08-06"), allDay: true },
+		{ id: "e4", sourceId: "c", title: "Tomorrow", startMs: msOfKey("2026-08-06") + at(0) - msOfKey(day), endMs: msOfKey("2026-08-07"), allDay: false },
+	];
+	const got = [mail("r1", "Chris Tate", "Financials", at(8)), mail("r2", "Late", "Not today", msOfKey("2026-08-06") + 3600000)];
+	const put = [mail("s1", "Steve Palm", "Re: Financials", at(10))];
+	const j = buildJournal(day, evs, got, put, [{ title: "Kore notes", changedMs: at(14) }, { title: "Old", changedMs: msOfKey("2026-08-01") }], false);
+
+	eq(j.meetings.map((m) => m.title).join(","), "Holiday,Standup", "meetings are listed, a declined one is not");
+	eq(j.meetings.find((m) => m.title === "Holiday")?.when, "All day", "an all-day event has no time because it did not happen at one");
+	eq(j.meetings.find((m) => m.title === "Standup")?.who, "Von, Deanna", "attendees ride along");
+	eq(j.received.map((m) => m.subject).join(","), "Financials", "only that day's mail counts");
+	eq(j.sent.map((m) => m.subject).join(","), "Re: Financials", "and what was sent is its own list");
+	eq(j.notes.map((n) => n.title).join(","), "Kore notes", "notes touched that day, and no others");
+
+	const md = journalMarkdown(j);
+	eq(md.startsWith("## Wednesday, Aug 5"), true, "the markdown leads with the day");
+	eq(md.includes("### Meetings"), true, "and has a section per kind");
+	eq(md.includes("### Sent"), true, "including what went out");
+	eq(md.includes("- **9 AM** Standup with Von, Deanna"), true, "a meeting line reads as one");
+	// a heading with nothing under it is worse than no heading
+	const bare = journalMarkdown(buildJournal(day, [], [], [], [], false));
+	eq(bare.includes("### Meetings"), false, "an empty section is left out");
+	eq(bare.includes("_Nothing recorded._"), true, "and a day with nothing in it says so");
+	eq(journalMarkdown(buildJournal(day, evs, [], [], [], false)).includes("### Received"), false, "sections appear only when they have something");
+}
+
+// --- calendar search ---
+{
+	const ev = (id: string, title: string, extra: Partial<PCEvent> = {}): PCEvent => ({
+		id,
+		sourceId: "cal1",
+		title,
+		startMs: msOfKey("2026-08-05") + 9 * 3600000,
+		endMs: msOfKey("2026-08-05") + 10 * 3600000,
+		allDay: false,
+		...extra,
+	});
+	const empty: EventQuery = { words: "", title: "", people: "", location: "", calendar: "", onlineOnly: false, allDayOnly: false, withPeopleOnly: false };
+	// distinct start times, so the ordering assertions test the sort rather
+	// than which way ties happen to fall
+	const events = [
+		ev("a", "Quarterly Review", { location: "Room 4", attendees: ["Deanna Palm"], organizer: "Steve Palm", startMs: msOfKey("2026-08-06") }),
+		ev("b", "Standup", { joinUrl: "https://teams.microsoft.com/x", attendees: ["Von Pasion"], startMs: msOfKey("2026-08-05") }),
+		ev("c", "Holiday", { allDay: true, sourceId: "cal2", startMs: msOfKey("2026-08-04") }),
+		ev("d", "Review of budgets", { description: "quarterly numbers", startMs: msOfKey("2026-08-07") }),
+	];
+	const ids = (q: Partial<EventQuery>) => matchEvents(events, { ...empty, ...q }).map((e) => e.id).join(",");
+
+	eq(ids({ words: "review" }), "a,d", "a word search reaches title and description, soonest first");
+	eq(ids({ title: "review" }), "a,d", "a title search matches only titles");
+	eq(ids({ title: "quarterly review" }), "a", "every word of a title search must match");
+	eq(ids({ words: "quarterly" }), "a,d", "but the same words against everything reach the description too");
+	eq(ids({ people: "deanna" }), "a", "people matches attendees");
+	eq(ids({ people: "steve" }), "a", "and the organizer");
+	eq(ids({ location: "room" }), "a", "location matches the place");
+	eq(ids({ calendar: "cal2" }), "c", "a calendar filter narrows to one source");
+	eq(ids({ onlineOnly: true }), "b", "online only keeps what has a join link");
+	eq(ids({ allDayOnly: true }), "c", "all-day only keeps all-day events");
+	eq(ids({ withPeopleOnly: true }), "b,a", "with-people only keeps the ones that have any");
+	eq(ids({ words: "REVIEW" }), "a,d", "matching ignores case");
+	eq(ids({ words: "review", onlineOnly: true }), "", "filters combine, and combining can find nothing");
+	eq(ids({}), "c,b,a,d", "asking nothing matches everything, in time order");
+	eq(ids({ words: "nothinglikethis" }), "", "a word matching nothing gives nothing");
+
+	eq(eventQueryIsEmpty(empty), true, "an untouched dialog asks nothing");
+	eq(eventQueryIsEmpty({ ...empty, words: "  " }), true, "and neither does one with only spaces");
+	eq(eventQueryIsEmpty({ ...empty, words: "x" }), false, "a word is a question");
+	eq(eventQueryIsEmpty({ ...empty, onlineOnly: true }), false, "and so is a toggle on its own");
+	eq(eventQueryIsEmpty({ ...empty, calendar: "cal1" }), false, "and so is picking a calendar");
+}
+
+// --- unsubscribe headers ---
+{
+	const h = (name: string, value: string) => ({ name, value });
+	eq(parseUnsubscribe(undefined), null, "no headers, no unsubscribe");
+	eq(parseUnsubscribe([]), null, "and neither does an empty set");
+	eq(parseUnsubscribe([h("Subject", "hi")]), null, "an unrelated header is not one");
+	eq(parseUnsubscribe([h("List-Unsubscribe", "   ")]), null, "an empty header is not one either");
+
+	const web = parseUnsubscribe([h("List-Unsubscribe", "<https://x.com/u?id=1>")])!;
+	eq(web.webUrl, "https://x.com/u?id=1", "an https link is read");
+	eq(web.oneClickUrl, undefined, "but it is not one-click without the header that says so");
+
+	const oc = parseUnsubscribe([h("List-Unsubscribe", "<https://x.com/u?id=1>"), h("List-Unsubscribe-Post", "List-Unsubscribe=One-Click")])!;
+	eq(oc.oneClickUrl, "https://x.com/u?id=1", "the post header makes it one-click");
+	eq(unsubscribePlan(oc).kind, "post", "and one-click is what gets used");
+
+	const both = parseUnsubscribe([h("list-unsubscribe", "<mailto:leave@x.com?subject=stop&body=please>, <https://x.com/u>")])!;
+	eq(both.webUrl, "https://x.com/u", "a header can carry both kinds");
+	eq(both.mailto?.to, "leave@x.com", "and the address parses out");
+	eq(both.mailto?.subject, "stop", "with its subject");
+	eq(both.mailto?.body, "please", "and its body");
+	eq(unsubscribePlan(both).kind, "open", "a link is preferred over sending mail");
+
+	const mailOnly = parseUnsubscribe([h("List-Unsubscribe", "<mailto:leave@x.com>")])!;
+	eq(mailOnly.mailto?.subject, "unsubscribe", "a bare mailto gets a sensible subject");
+	eq(unsubscribePlan(mailOnly).kind, "mail", "and mail is the only way left");
+	eq(unsubscribePlan(mailOnly).target, "leave@x.com", "the plan names where it goes");
+
+	eq(parseUnsubscribe([h("List-Unsubscribe", "<mailto:not-an-address>")]), null, "a mailto with no address is no way out");
+	eq(parseUnsubscribe([h("List-Unsubscribe", "https://x.com/u")]), null, "a URI outside angle brackets is not the format");
+	eq(parseUnsubscribe([h("List-Unsubscribe", "<ftp://x.com/u>")]), null, "and an unusable scheme is ignored");
+	eq(parseUnsubscribe([h("LIST-UNSUBSCRIBE", "<https://x.com/u>")])!.webUrl, "https://x.com/u", "header names match whatever the case");
+	// the first of each kind wins, so two links do not fight
+	eq(parseUnsubscribe([h("List-Unsubscribe", "<https://a.com/1>, <https://b.com/2>")])!.webUrl, "https://a.com/1", "the first link is the one offered");
+}
+
+// --- inbox rules ---
+{
+	const stored = {
+		displayName: "Jira to JIRA",
+		isEnabled: true,
+		conditions: { senderContains: ["jira@", "atlassian"], subjectContains: ["[JIRA]"] },
+		actions: { moveToFolder: "f-jira", markAsRead: true },
+		exceptions: {},
+	};
+	const e = ruleToEdit(stored);
+	eq(e.name, "Jira to JIRA", "a stored rule reads back its name");
+	eq(e.fromContains, "jira@, atlassian", "a condition list reads back comma separated");
+	eq(e.subjectContains, "[JIRA]", "and a single value reads back bare");
+	eq(e.moveToFolderId, "f-jira", "the destination folder reads back");
+	eq(e.markAsRead && e.enabled, true, "so do the flags");
+	eq(e.deleteIt || e.hasAttachments || e.highImportance, false, "and what was not set stays unset");
+
+	// the round trip has to be lossless for what it manages
+	const body = ruleToBody(e, stored);
+	eq((body.conditions as Record<string, unknown>).senderContains, ["jira@", "atlassian"], "editing and saving preserves a list");
+	eq((body.actions as Record<string, unknown>).moveToFolder, "f-jira", "and the destination");
+	eq(body.displayName, "Jira to JIRA", "and the name");
+
+	// the part that matters: Outlook can set things this editor never shows,
+	// and a PATCH replaces conditions and actions whole
+	const richer = {
+		displayName: "From Outlook",
+		isEnabled: true,
+		conditions: { senderContains: ["boss@"], fromAddresses: [{ emailAddress: { address: "boss@x.com" } }], sensitivity: "private" },
+		actions: { moveToFolder: "f1", forwardTo: [{ emailAddress: { address: "me@x.com" } }] },
+		exceptions: {},
+	};
+	const kept = ruleToBody(ruleToEdit(richer), richer);
+	const kc = kept.conditions as Record<string, unknown>;
+	const ka = kept.actions as Record<string, unknown>;
+	eq(!!kc.fromAddresses, true, "a condition this editor cannot show survives the save");
+	eq(kc.sensitivity, "private", "and so does another one");
+	eq(!!ka.forwardTo, true, "and an action it cannot show survives too");
+	eq(kc.senderContains, ["boss@"], "while the managed condition is still written");
+
+	// clearing a managed field removes its key rather than writing an empty list
+	const cleared = ruleToBody({ ...ruleToEdit(stored), fromContains: "  ", markAsRead: false }, stored);
+	eq("senderContains" in (cleared.conditions as Record<string, unknown>), false, "clearing a condition deletes the key");
+	eq("markAsRead" in (cleared.actions as Record<string, unknown>), false, "and turning an action off deletes it too");
+	eq("subjectContains" in (cleared.conditions as Record<string, unknown>), true, "while the ones still set stay");
+
+	eq(ruleToBody({ ...EMPTY_RULE, name: "  " }).displayName, "Untitled rule", "a rule with no name still gets one");
+	eq(Object.keys(ruleToBody(EMPTY_RULE).conditions as Record<string, unknown>).length, 0, "an empty rule writes no conditions");
+
+	// knowing when there is more than this editor shows
+	eq(ruleHasUnknownParts(stored), false, "a rule made here has nothing hidden");
+	eq(ruleHasUnknownParts(richer), true, "one from Outlook may have");
+	eq(ruleHasUnknownParts({ conditions: {}, actions: {}, exceptions: { subjectContains: ["x"] } }), true, "an exception counts as hidden, since none are shown");
+
+	// the one-line summary
+	eq(ruleSummary(e, "JIRA"), "When from jira@, atlassian and subject has [JIRA]: move to JIRA, mark read", "a rule reads as a sentence");
+	eq(ruleSummary(EMPTY_RULE), "Does nothing yet", "an empty rule says so");
+	eq(ruleSummary({ ...EMPTY_RULE, markAsRead: true }), "Everything: mark read", "a rule with no condition applies to everything");
+	eq(ruleSummary({ ...EMPTY_RULE, fromContains: "x@y" }), "When from x@y: nothing yet", "a rule with no action says that too");
+	eq(ruleSummary({ ...EMPTY_RULE, deleteIt: true, hasAttachments: true }), "When has an attachment: delete", "conditions and actions both read plainly");
+}
+
+// --- the local search index ---
+{
+	eq(tokenize("Invoice T-258926").join(","), "invoice,t-258926,t,258926", "a hyphenated id keeps its whole form and its parts");
+	eq(tokenize("steve.palm@irely.com").join(","), "steve.palm@irely.com,steve,palm,irely,com", "an address is findable whole or by any piece");
+	eq(tokenize("  Hello,   world!  ").join(","), "hello,world", "punctuation and runs of space fall away");
+	eq(tokenize("").length, 0, "nothing tokenizes to nothing");
+	eq(tokenize("...---...").length, 0, "and so does punctuation on its own");
+	eq(tokenize("RE: Kore").join(","), "re,kore", "a trailing colon is not part of the word");
+
+	const doc = (id: string, subject: string, from: string, body: string, ms: number, extra: Partial<IndexDoc> = {}): IndexDoc => ({
+		id,
+		subject,
+		from,
+		body,
+		ms,
+		unread: false,
+		flagged: false,
+		hasAttachments: false,
+		...extra,
+	});
+	const idx = buildIndex([
+		doc("1", "Invoice T-258926", "Pulseway <support@pulseway.com>", "Thank you for your payment", 500, { hasAttachments: true }),
+		doc("2", "Kore Tank Management", "Deanna Palm <deanna@irely.com>", "Can you look at the invoice line", 400, { unread: true }),
+		doc("3", "Nirvana Review", "Chris Tate <chris@irely.com>", "August numbers attached", 300, { flagged: true }),
+		doc("4", "Penetration Test", "Craig Cannon <craig@irely.com>", "report is ready", 200),
+	]);
+
+	const ids = (q: string) => searchIndex(idx, q).join(",");
+	eq(ids("invoice"), "1,2", "a subject hit outranks a body hit");
+	eq(ids("inv"), "1,2", "a prefix matches, so results narrow as you type");
+	eq(ids("258926"), "1", "a ticket number is findable by its digits");
+	eq(ids("t-258926"), "1", "and by its whole form");
+	eq(ids("palm"), "2", "an address is findable by a name inside it");
+	eq(ids("invoice kore"), "2", "two words both have to match");
+	eq(ids("invoice zzz"), "", "and a word matching nothing gives nothing");
+	eq(ids(""), "", "an empty query matches nothing rather than everything");
+	eq(ids("   "), "", "and neither does whitespace");
+
+	// fields and flags
+	eq(ids("from:deanna"), "2", "from: matches the sender");
+	eq(ids("from:irely.com"), "2,3,4", "including by domain, newest first");
+	eq(ids("subject:review"), "3", "subject: matches only the subject");
+	eq(ids("subject:payment"), "", "so a body word does not satisfy it");
+	eq(ids("is:unread"), "2", "is:unread filters");
+	eq(ids("is:read"), "1,3,4", "and so does is:read");
+	eq(ids("is:flagged"), "3", "is:flagged filters");
+	eq(ids("has:attachment"), "1", "has:attachment filters");
+	eq(ids("has:attachments"), "1", "in either spelling");
+	eq(ids("invoice is:unread"), "2", "a filter narrows a word search");
+	eq(ids("from:irely.com is:flagged"), "3", "and filters combine");
+
+	// phrases
+	eq(ids('"tank management"'), "2", "a quoted phrase matches as a run");
+	eq(ids('"management tank"'), "", "and not in the wrong order");
+	eq(ids('"thank you for your payment"'), "1", "phrases reach into bodies");
+	eq(ids('""'), "", "an empty phrase asks for nothing");
+
+	// date bounds
+	const dated = buildIndex([
+		doc("j1", "Jan", "a@x.com", "", msOfKey("2026-01-15")),
+		doc("j2", "Jun", "a@x.com", "", msOfKey("2026-06-15")),
+		doc("j3", "Dec", "a@x.com", "", msOfKey("2026-12-15")),
+	]);
+	const dids = (q: string) => searchIndex(dated, q).join(",");
+	eq(dids("after:2026-06-01"), "j3,j2", "after: keeps what came later, newest first");
+	eq(dids("before:2026-06-30"), "j2,j1", "before: keeps what came earlier");
+	eq(dids("after:2026-06-01 before:2026-06-30"), "j2", "the two together make a range");
+	// "before Friday" said out loud includes Friday
+	eq(dids("before:2026-06-15"), "j2,j1", "before: includes the whole of that day, not just its midnight");
+	eq(dids("after:2026-06-15"), "j3,j2", "and after: starts at that day's beginning");
+	eq(dids("after:nonsense"), "", "an unreadable date narrows to nothing rather than being ignored");
+	eq(dids("from:a@x.com after:2026-06-01"), "j3,j2", "a date narrows a field search");
+
+	// the dialog builds the same text you could type
+	eq(buildQuery({ words: "invoice" }), "invoice", "words pass through");
+	eq(buildQuery({ from: "steve, deanna" }), "from:steve from:deanna", "each sender becomes its own term");
+	eq(buildQuery({ subject: "tank management" }), "subject:tank subject:management", "and each subject word its own");
+	eq(buildQuery({ phrase: "tank management" }), '"tank management"', "a phrase is quoted");
+	eq(buildQuery({ phrase: 'a "quoted" thing' }), '"a quoted thing"', "inner quotes are dropped rather than breaking the query");
+	eq(buildQuery({ unread: true, flagged: true, attachments: true }), "is:unread is:flagged has:attachment", "the toggles become filters");
+	eq(buildQuery({ after: "2026-01-01", before: "2026-12-31" }), "after:2026-01-01 before:2026-12-31", "the dates become bounds");
+	eq(buildQuery({}), "", "an empty dialog builds an empty query");
+	eq(buildQuery({ words: "  ", from: " , " }), "", "and so does one with nothing but spaces");
+	// what it builds must be what the parser reads
+	eq(searchIndex(dated, buildQuery({ from: "a@x.com", after: "2026-06-01" })).join(","), "j3,j2", "the built query runs as itself");
+
+	// what the mailbox is asked, versus what we filter ourselves
+	const gq = (q: string) => graphSearchText(parseQuery(q));
+	eq(gq("invoice"), "invoice", "words go to the mailbox");
+	eq(gq('"tank management"'), '"tank management"', "and so do phrases");
+	eq(gq("from:deanna subject:kore"), "from:deanna subject:kore", "from and subject are things it understands");
+	eq(gq("is:unread has:attachment after:2026-01-01"), "", "the flags and the dates are not, so it is asked nothing");
+	eq(gq("invoice is:unread"), "invoice", "a mixed query sends only the half it can answer");
+
+	const pm: PCMail = { id: "x", accountId: "a", accountLabel: "l", from: "f", fromAddress: "f@x.com", subject: "s", preview: "", receivedMs: msOfKey("2026-06-15"), unread: true, flagged: true, hasAttachments: true };
+	eq(passesLocalFilters(pm, parseQuery("is:unread")), true, "an unread message passes is:unread");
+	eq(passesLocalFilters({ ...pm, unread: false }, parseQuery("is:unread")), false, "and a read one does not");
+	eq(passesLocalFilters({ ...pm, flagged: undefined }, parseQuery("is:flagged")), false, "flagged filters server results too");
+	eq(passesLocalFilters({ ...pm, hasAttachments: undefined }, parseQuery("has:attachment")), false, "so does the attachment filter");
+	eq(passesLocalFilters(pm, parseQuery("after:2026-07-01")), false, "a date bound rules out what the mailbox returned anyway");
+	eq(passesLocalFilters(pm, parseQuery("after:2026-01-01 before:2026-12-31")), true, "and lets through what is inside it");
+	eq(passesLocalFilters(pm, parseQuery("invoice")), true, "a plain word query filters nothing here, the mailbox did that");
+
+	// ranking and limits
+	eq(searchIndex(idx, "from:irely.com", 2).join(","), "2,3", "the limit is honored, best first");
+	eq(searchIndex(buildIndex([]), "anything").length, 0, "an empty index finds nothing");
+	// a body that was never fetched simply cannot be searched
+	const noBody = buildIndex([doc("9", "Subject only", "a@x.com", "", 1)]);
+	eq(searchIndex(noBody, "subject").join(","), "9", "a message with no body is still found by its subject");
+	eq(searchIndex(noBody, "unfetched").length, 0, "but a word only in its unread body is not");
+}
+
+// --- printing ---
+{
+	const doc = printableHtml({ subject: "Invoice T-258926", from: "Pulseway <s@p.com>", to: "Steve Palm", date: "Aug 1, 2026", bodyHtml: "<p>Thank you</p>" });
+	eq(doc.startsWith("<!doctype html>"), true, "it is a whole document, not a fragment");
+	eq(doc.includes("<title>Invoice T-258926</title>"), true, "the subject titles the page");
+	eq(doc.includes("<p>Thank you</p>"), true, "the body goes in whole");
+	eq(doc.includes("Pulseway &lt;s@p.com&gt;"), true, "angle brackets in a sender are escaped, not rendered");
+	eq(doc.includes("@page"), true, "and it carries print margins of its own");
+
+	// a subject is attacker-controlled text and this is where it becomes markup
+	const nasty = printableHtml({ subject: `<img src=x onerror="alert(1)">`, from: "a", to: "b", date: "c", bodyHtml: "<p>x</p>" });
+	eq(nasty.includes("<img src=x"), false, "a subject cannot smuggle a tag into the page");
+	eq(nasty.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"), true, "it is shown as the text it is");
+
+	// a plain-text body must not have its markup guessed at
+	const plain = printableHtml({ subject: "s", from: "a", to: "b", date: "c", bodyHtml: "line 1\n<not a tag>", plain: true });
+	eq(plain.includes("&lt;not a tag&gt;"), true, "plain text is escaped rather than parsed");
+	eq(plain.includes("<pre class=\"plain\">"), true, "and kept in a block that respects its line breaks");
+
+	// a missing field simply does not get a row
+	const spare = printableHtml({ subject: "s", from: "a", to: "", date: "", bodyHtml: "" });
+	eq(spare.includes("<th>To</th>"), false, "an empty field is left out rather than printed blank");
+	eq(spare.includes("<th>From</th>"), true, "and the ones that have a value stay");
+}
+
+// --- printing a calendar ---
+{
+	const days = [
+		{ heading: "Monday, Aug 3", events: [{ when: "9:00 AM", title: "Standup", where: "Teams" }] },
+		{ heading: "Tuesday, Aug 4", events: [] },
+	];
+	const a = printableAgendaHtml("Week of Aug 3", days);
+	eq(a.includes("<title>Week of Aug 3</title>"), true, "the range titles the page");
+	eq(a.includes("Standup"), true, "events are listed");
+	eq(a.includes("Teams"), true, "with where they are");
+	eq(a.includes("Nothing scheduled"), true, "an empty day says so rather than vanishing");
+	eq(a.includes("page-break-inside: avoid"), true, "and a day does not split across pages");
+	const noWhere = printableAgendaHtml("t", [{ heading: "d", events: [{ when: "9", title: "x" }] }]);
+	eq(noWhere.includes("class=\"where\""), false, "an event with no location gets no empty line for one");
+
+	const weeks = [
+		[
+			{ label: "27", dim: true, events: [] },
+			{ label: "28", dim: false, events: [{ when: "9:00", title: "Review" }] },
+		],
+	];
+	const mth = printableMonthHtml("August 2026", ["Mon", "Tue"], weeks);
+	eq(mth.includes("<th>Mon</th>"), true, "the weekday headings are there");
+	eq(mth.includes("size: landscape"), true, "a month grid asks for landscape rather than hoping");
+	eq(mth.includes('class="dim"'), true, "days outside the month are marked");
+	eq(mth.includes("Review"), true, "and the events are in their cells");
+
+	// the same escaping duty everywhere text from elsewhere becomes markup
+	const nasty = printableAgendaHtml("<b>t</b>", [{ heading: "<i>d</i>", events: [{ when: "9", title: "<script>x</script>", where: "<u>w</u>" }] }]);
+	eq(nasty.includes("<script>") || nasty.includes("<i>d</i>") || nasty.includes("<u>w</u>"), false, "an event title, heading, or place cannot smuggle a tag in");
+	eq(nasty.includes("&lt;script&gt;"), true, "they print as the text they are");
+	const nastyM = printableMonthHtml("t", ["<b>M</b>"], [[{ label: "<i>1</i>", dim: false, events: [{ when: "9", title: "<img>" }] }]]);
+	eq(nastyM.includes("<b>M</b>") || nastyM.includes("<i>1</i>") || nastyM.includes("<img>"), false, "and the same holds for the grid");
+}
+
+// --- printing a list ---
+{
+	const rows = [
+		{ from: "Craig Cannon", subject: "PenTest report", date: "Jul 28", folder: "IT" },
+		{ from: "Chris Tate", subject: "Nirvana Review", date: "Jul 31" },
+	];
+	const t = printableTableHtml("Unread", rows);
+	eq(t.includes("<title>Unread</title>"), true, "the list's name titles the page");
+	eq(t.includes("2 messages"), true, "the count is stated");
+	eq(printableTableHtml("x", [rows[0]]).includes("1 message<"), true, "and reads singular for one");
+	eq(printableTableHtml("x", []).includes("0 messages"), true, "an empty list still prints, saying so");
+	eq((t.match(/<tr>/g) ?? []).length, 3, "a heading row and one per message");
+	eq(t.includes("<td>Craig Cannon</td>"), true, "senders are cells");
+	eq(t.includes("<td>IT</td>"), true, "and so is the folder when there is one");
+	eq(t.includes("<td></td>"), true, "a message with no folder gets an empty cell rather than the word undefined");
+	eq(t.includes("display: table-header-group"), true, "the headings repeat on later pages");
+	// the same escaping duty as the message printer
+	const nasty = printableTableHtml("<b>t</b>", [{ from: "a", subject: `<script>x</script>`, date: "d" }]);
+	eq(nasty.includes("<script>"), false, "a subject cannot smuggle a tag into the table");
+	eq(nasty.includes("&lt;script&gt;x&lt;/script&gt;"), true, "it prints as the text it is");
+	eq(nasty.includes("<title>&lt;b&gt;t&lt;/b&gt;</title>"), true, "and the title is escaped too");
+}
+
+// --- print options ---
+{
+	// the page rule is the one place orientation and margins are decided
+	eq(pageRule(undefined, false, 14), "@page { margin: 14mm; }", "no options prints portrait at the style's margin");
+	eq(pageRule(undefined, true, 10), "@page { size: landscape; margin: 10mm; }", "a style that wants landscape gets it unasked");
+	eq(pageRule({ landscape: true }, false, 14), "@page { size: landscape; margin: 14mm; }", "and asking turns a portrait style sideways");
+	eq(pageRule({ landscape: false }, true, 10), "@page { margin: 10mm; }", "asking for portrait turns the month grid back");
+	eq(pageRule({ fontPt: 20 }, false, 14), "@page { margin: 14mm; }", "size has nothing to do with the paper");
+
+	// Normal is exactly the size each style always printed at
+	eq(scaledPt(12, "m"), 12, "Normal leaves a message where it was");
+	eq(scaledPt(8.5, "m"), 8.5, "and leaves the month grid where it was");
+	eq(scaledPt(12, "xl"), 16.2, "Largest scales up, to a tenth of a point");
+	eq(scaledPt(10.5, "xs"), 7.9, "Smallest scales down and still reads as a number");
+	eq(scaledPt(12, "nonsense"), 12, "a scale nobody has heard of changes nothing");
+	eq(
+		PRINT_SCALES.map((s) => s.id).join(","),
+		"xs,s,m,l,xl",
+		"the steps run smallest to largest, so a picker built from them reads in order"
+	);
+
+	// every document flows both options through, and omitting them prints
+	// what it printed before any of this existed
+	const msg = { subject: "s", from: "a", to: "b", date: "c", bodyHtml: "<p>x</p>" };
+	eq(printableHtml(msg).includes("@page { margin: 14mm; }"), true, "a message defaults to portrait");
+	eq(printableHtml(msg).includes("font-size: 12pt"), true, "at 12pt");
+	eq(printableHtml(msg, { fontPt: 16.2, landscape: true }).includes("font-size: 16.2pt"), true, "the chosen size reaches the message stylesheet");
+	eq(printableHtml(msg, { fontPt: 16.2, landscape: true }).includes("size: landscape"), true, "and so does the orientation");
+
+	const rows = [{ from: "a", subject: "s", date: "d" }];
+	eq(printableTableHtml("t", rows).includes("font-size: 10pt"), true, "the table keeps its own base size");
+	eq(printableTableHtml("t", rows, { fontPt: 8.8 }).includes("font-size: 8.8pt"), true, "and takes a new one");
+	eq(printableTableHtml("t", rows, { landscape: true }).includes("size: landscape"), true, "a long subject line can have the paper sideways");
+
+	const days = [{ heading: "d", events: [{ when: "9 AM", title: "x" }] }];
+	eq(printableAgendaHtml("t", days).includes("font-size: 10.5pt"), true, "the agenda keeps its base size");
+	eq(printableAgendaHtml("t", days, { fontPt: 12.1 }).includes("font-size: 12.1pt"), true, "and takes a new one");
+
+	const weeks = [[{ label: "1", dim: false, events: [{ when: "9", title: "x" }] }]];
+	eq(printableMonthHtml("t", ["Mon"], weeks).includes("size: landscape"), true, "the month grid still defaults to sideways");
+	eq(printableMonthHtml("t", ["Mon"], weeks, { landscape: false }).includes("size: landscape"), false, "unless you ask for it upright");
+	eq(printableMonthHtml("t", ["Mon"], weeks, { fontPt: 11.5 }).includes("font-size: 11.5pt"), true, "and it scales like the rest");
+}
+
+// --- signatures ---
+{
+	const sigs = [
+		{ id: "s1", name: "iRely", html: "<p>Best regards</p>" },
+		{ id: "s2", name: "Short", html: "<p>Steve</p>" },
+	];
+	const use = [{ accountId: "work", newId: "s1", replyId: "s2" }];
+	eq(signatureFor(sigs, use, "work", "new")?.name, "iRely", "new mail takes the account's new signature");
+	eq(signatureFor(sigs, use, "work", "reply")?.name, "Short", "and a reply takes its own, which is usually shorter");
+	eq(signatureFor(sigs, use, "personal", "new"), null, "an account with no setting gets none");
+	eq(signatureFor(sigs, [{ accountId: "work", newId: "", replyId: "s2" }], "work", "new"), null, "an empty id means none, deliberately");
+	// a deleted signature must not silently become a different one
+	eq(signatureFor(sigs, [{ accountId: "work", newId: "gone", replyId: "s2" }], "work", "new"), null, "an id naming nothing resolves to nothing, never to another signature");
+	eq(signatureFor([], use, "work", "new"), null, "no signatures at all is no signature");
+
+	// the one-time carry from the old single-signature setting
+	const moved = migrateSignature("<p>old</p>", [], ["work", "personal"], "fresh")!;
+	eq(moved.sigs.length, 1, "an old signature becomes one named signature");
+	eq(moved.sigs[0].name, "Signature", "with a name to show in the list");
+	eq(moved.sigs[0].html, "<p>old</p>", "and its markup intact");
+	eq(moved.use.length, 2, "every account is pointed at it");
+	eq(moved.use[0].newId === "fresh" && moved.use[0].replyId === "fresh", true, "for both new mail and replies, as it behaved before");
+	eq(migrateSignature("", [], ["work"], "fresh"), null, "nothing to carry does nothing");
+	eq(migrateSignature("   ", [], ["work"], "fresh"), null, "and neither does whitespace");
+	eq(migrateSignature("<p>old</p>", sigs, ["work"], "fresh"), null, "an existing list is never overwritten by the old setting");
+
+	// data-url images become inline attachments, which is the only way a
+	// logo actually renders for the person receiving it
+	const one = extractInlineImages('<p>Hi</p><img src="data:image/png;base64,AAAA">', "x");
+	eq(one.images.length, 1, "a data url is pulled out");
+	eq(one.images[0].contentType, "image/png", "keeping its type");
+	eq(one.images[0].base64, "AAAA", "and its bytes");
+	eq(one.images[0].name, "image1.png", "with a name the extension matches");
+	eq(one.html, '<p>Hi</p><img src="cid:pd-x-1">', "and the markup now points at the attachment");
+	const two = extractInlineImages(`<img src='data:image/jpeg;base64,BBBB'><img src="data:image/gif;base64,CCCC">`, "y");
+	eq(two.images.map((i) => i.cid), ["pd-y-1", "pd-y-2"], "several images get distinct ids");
+	eq(two.images.map((i) => i.name), ["image1.jpeg", "image2.gif"], "each named for its own type");
+	eq(two.html.includes("data:"), false, "and none of the data urls survive");
+	eq(extractInlineImages('<img src="https://x.com/logo.png">', "z").images.length, 0, "a hosted image is left exactly as it was");
+	eq(extractInlineImages("<p>no images</p>", "z").html, "<p>no images</p>", "markup with no images is untouched");
+}
+
+// --- new mail arrivals ---
+{
+	const m = (id: string, ms: number, extra: Partial<PCMail> = {}): PCMail => ({
+		id,
+		accountId: "a1",
+		accountLabel: "Work",
+		from: `Sender ${id}`,
+		fromAddress: `${id}@x.com`,
+		subject: `Subject ${id}`,
+		preview: "",
+		receivedMs: ms,
+		unread: true,
+		...extra,
+	});
+	const none = new Set<string>();
+	const list = [m("a", 100), m("b", 300), m("c", 200)];
+
+	eq(newArrivals(list, 150, none, false).map((x) => x.id), ["c", "b"], "only what arrived after the baseline, oldest first");
+	eq(newArrivals(list, 0, none, false).length, 3, "a zero baseline lets everything through");
+	eq(newArrivals(list, 999, none, false).length, 0, "a baseline past everything announces nothing");
+	// the guard that stops a first sync shouting about a thousand old messages
+	eq(newArrivals(list, Math.max(...list.map((x) => x.receivedMs)), none, false).length, 0, "baselining on the newest silences the whole first load");
+	eq(newArrivals(list, 150, new Set(["b"]), false).map((x) => x.id), ["c"], "anything already announced is not announced twice");
+	eq(newArrivals([m("d", 400, { unread: false })], 0, none, false).length, 0, "mail already read is not news");
+	eq(newArrivals([m("e", 400, { focused: false })], 0, none, true).length, 0, "with focused-only on, Outlook's Other is quiet");
+	eq(newArrivals([m("f", 400, { focused: false })], 0, none, false).length, 1, "and with it off, everything speaks");
+	eq(newArrivals([m("g", 400)], 0, none, true).length, 1, "no verdict at all still counts as focused, never silently dropped");
+
+	eq(arrivalSummary([m("a", 1)]).title, "Sender a", "one arrival leads with who it is from");
+	eq(arrivalSummary([m("a", 1)]).body, "Subject a", "and says what it is about");
+	eq(arrivalSummary([m("a", 1), m("b", 2)]).title, "2 new messages", "several are counted");
+	eq(arrivalSummary([m("a", 1), m("b", 2)]).body, "Sender a, Sender b", "and named");
+	const many = [m("a", 1), m("b", 2), m("c", 3), m("d", 4)];
+	eq(arrivalSummary(many).body, "Sender a, Sender b and 2 others", "a crowd is summarized rather than listed");
+	const dupes = [m("a", 1), { ...m("b", 2), from: "Sender a" }];
+	eq(arrivalSummary(dupes).body, "Sender a", "two from one person name them once");
+}
+
+// --- the split inbox ---
+{
+	const m = (fromAddress: string, extra: Partial<PCMail> = {}): PCMail => ({
+		id: fromAddress,
+		accountId: "a1",
+		accountLabel: "Work",
+		from: fromAddress.split("@")[0],
+		fromAddress,
+		subject: "s",
+		preview: "",
+		receivedMs: 1,
+		unread: false,
+		...extra,
+	});
+
+	// machines
+	eq(automatedSender("no-reply@pulseway.com"), true, "no-reply is a machine");
+	eq(automatedSender("noreply@x.com"), true, "so is noreply without the dash");
+	eq(automatedSender("DoNotReply@x.com"), true, "and do-not-reply, whatever the case");
+	eq(automatedSender("jira@irely.atlassian.net"), true, "ticketing counts");
+	eq(automatedSender("notifications@github.com"), true, "so do notifications");
+	eq(automatedSender("builds@ci.x.com"), true, "and build mail");
+	eq(automatedSender("alerts+prod@x.com"), true, "a plus tag does not hide the name");
+	// people at those same places are still people
+	eq(automatedSender("steve.palm@irely.com"), false, "a person is not a machine");
+	eq(automatedSender("ardi@irely.atlassian.net"), false, "a colleague mailing from atlassian is still a colleague");
+	eq(automatedSender("noreplacement@x.com"), false, "a name that merely starts with 'no' is not no-reply");
+	eq(automatedSender("systematic@x.com"), false, "nor is 'systematic' the system account");
+	eq(automatedSender(""), false, "an empty address is not a machine");
+	eq(automatedSender("bare-name"), false, "and neither is something with no domain at all");
+
+	// sections
+	eq(sectionOf(m("a@x.com", { flagged: true })), "priority", "a flag outranks everything");
+	eq(sectionOf(m("no-reply@x.com", { flagged: true })), "priority", "even on a machine's mail");
+	eq(sectionOf(m("a@x.com", { priority: true })), "priority", "so does high importance");
+	eq(sectionOf(m("no-reply@x.com")), "notifications", "machines land in notifications");
+	eq(sectionOf(m("a@x.com", { focused: true })), "focused", "Outlook's focused verdict is honored");
+	eq(sectionOf(m("a@x.com", { focused: false })), "other", "and so is its other verdict");
+	eq(sectionOf(m("a@x.com")), "focused", "no verdict at all counts as focused, never hidden");
+	eq(sectionOf(m("no-reply@x.com", { focused: false })), "notifications", "a machine is notifications even when Outlook says other");
+
+	// the split itself
+	const list = [m("no-reply@x.com"), m("b@x.com", { focused: false }), m("c@x.com", { flagged: true }), m("d@x.com", { focused: true }), m("e@x.com", { focused: true })];
+	const secs = splitSections(list);
+	eq(secs.map((s) => s.key).join(","), "priority,focused,notifications,other", "sections come in reading order");
+	eq(secs.find((s) => s.key === "focused")!.messages.length, 2, "a section holds everything that matched it");
+	eq(
+		secs.find((s) => s.key === "focused")!.messages.map((x) => x.id).join(","),
+		"d@x.com,e@x.com",
+		"and keeps the order the list handed it"
+	);
+	eq(splitSections([m("a@x.com", { focused: true })]).length, 1, "empty sections are dropped");
+	eq(splitSections([]).length, 0, "an empty list splits into nothing");
+	eq(
+		splitSections(list).reduce((n, s) => n + s.messages.length, 0),
+		list.length,
+		"every message lands in exactly one section"
+	);
+}
+
+// --- recipient autocomplete ---
+{
+	const seen = [
+		{ name: "Steve Palm", email: "steve.palm@irely.com", ms: 300 },
+		{ name: "", email: "STEVE.PALM@irely.com", ms: 500 },
+		{ name: "Steve P", email: "steve.palm@irely.com", ms: 100 },
+		{ name: "Deanna Palm", email: "deanna@irely.com", ms: 400 },
+		{ name: "Webmaster", email: "webmaster@stevecorp.com", ms: 200 },
+		{ name: "Nope", email: "not-an-address", ms: 900 },
+	];
+	const idx = rankContacts(seen);
+	eq(idx.length, 3, "an address with no @ is not a contact");
+	eq(idx[0].email, "steve.palm@irely.com", "the most-seen address leads");
+	eq(idx[0].count, 3, "sightings of one address fold into one entry");
+	eq(idx[0].email === idx[0].email.toLowerCase(), true, "addresses normalize to lower case");
+	eq(idx[0].name, "Steve Palm", "a later sighting with no name leaves the name it had");
+	eq(idx[0].lastMs, 500, "but the recency still moves");
+
+	const two = rankContacts([
+		{ name: "A", email: "a@x.com", ms: 1 },
+		{ name: "B", email: "b@x.com", ms: 900 },
+	]);
+	eq(two[0].email, "b@x.com", "an equal count falls back to recency, newest first");
+	eq(rankContacts([{ name: "Late", email: "c@x.com", ms: 5 }, { name: "", email: "c@x.com", ms: 1 }])[0].name, "Late", "the newest sighting that has a name wins");
+	eq(rankContacts([{ name: "", email: "d@x.com", ms: 5 }, { name: "Old", email: "d@x.com", ms: 1 }])[0].name, "Old", "and a nameless newer sighting still takes an older name");
+
+	// matching
+	eq(matchContacts(idx, "ste")[0].email, "steve.palm@irely.com", "a prefix beats a match in the middle");
+	eq(matchContacts(idx, "ste").length, 2, "but the middle match is still offered");
+	eq(matchContacts(idx, "palm").map((c) => c.email).includes("deanna@irely.com"), true, "a surname finds the person");
+	eq(matchContacts(idx, "deanna@")[0].email, "deanna@irely.com", "a partial address matches");
+	eq(matchContacts(idx, "zzz").length, 0, "nothing matching gives nothing");
+	eq(matchContacts(idx, "").length, 3, "an empty query offers the whole ranked list");
+	eq(matchContacts(idx, "irely", 2).length, 2, "the limit is honored");
+
+	// the address book merged with the correspondence
+	{
+		const seen2 = [
+			{ name: "Deanna Palm", email: "deanna@irely.com", count: 40, lastMs: 900 },
+			{ name: "amazon", email: "orders@amazon.com", count: 5, lastMs: 800 },
+		];
+		const saved = [
+			{ name: "Deanna J Palm", email: "DEANNA@irely.com", company: "iRely", title: "Analyst", phone: "555-1234" },
+			{ name: "Never Mailed", email: "new@x.com", company: "Acme" },
+			{ name: "Broken", email: "not-an-address" },
+		];
+		const merged = mergePeople(seen2, saved);
+		eq(merged.length, 3, "an address with no @ is not a person");
+		eq(merged[0].email, "deanna@irely.com", "the one you deal with most leads");
+		eq(merged[0].saved, true, "and is marked as saved once the address book confirms her");
+		eq(merged[0].name, "Deanna J Palm", "the address book's name wins over one scraped off a From line");
+		eq(merged[0].count, 40, "while the real correspondence count is kept");
+		eq(merged[0].company, "iRely", "with the details only the address book has");
+		eq(merged[0].phone, "555-1234", "including the phone");
+		eq(merged.find((p) => p.email === "new@x.com")?.saved, true, "a contact never written to still appears");
+		eq(merged.find((p) => p.email === "new@x.com")?.count, 0, "with no correspondence to its name");
+		eq(merged[merged.length - 1].email, "new@x.com", "and sits after everyone actually corresponded with");
+		eq(merged.find((p) => p.email === "orders@amazon.com")?.saved, false, "someone only ever seen in mail is not marked saved");
+		eq(mergePeople([], []).length, 0, "nothing merges to nothing");
+		eq(mergePeople(seen2, []).length, 2, "no address book leaves the correspondence alone");
+		eq(mergePeople([], saved).map((p) => p.name).join(","), "Broken,Deanna J Palm,Never Mailed".split(",").filter((n) => n !== "Broken").join(","), "an address book alone sorts by name");
+	}
+
+	// the fragment being typed
+	eq(currentAddressFragment("bob@x.com, ste", 14).text, "ste", "the fragment is what follows the last comma");
+	eq(currentAddressFragment("bob@x.com, ste", 14).start, 10, "and it starts after that comma");
+	eq(currentAddressFragment("ste", 3).text, "ste", "the first address is a fragment too");
+	eq(currentAddressFragment("", 0).text, "", "an empty box has an empty fragment");
+	eq(currentAddressFragment("a@x.com; be", 11).text, "be", "semicolons separate as well as commas");
+
+	// taking a suggestion
+	const one = applyAddressChoice("ste", 3, "steve.palm@irely.com");
+	eq(one.value, "steve.palm@irely.com, ", "a choice replaces the fragment and leaves a comma to carry on");
+	eq(one.caret, one.value.length, "with the caret at the end");
+	const second = applyAddressChoice("bob@x.com, ste", 14, "steve.palm@irely.com");
+	eq(second.value, "bob@x.com, steve.palm@irely.com, ", "an earlier address survives untouched");
+	const middle = applyAddressChoice("bob@x.com, ste, later@x.com", 14, "steve.palm@irely.com");
+	eq(middle.value, "bob@x.com, steve.palm@irely.com, later@x.com", "and so does one typed after it");
+	eq(middle.caret, "bob@x.com, steve.palm@irely.com, ".length, "the caret lands ready for the next name");
+}
+
+// --- the "later" presets, for snooze and schedule send ---
+{
+	// 2026-08-05 is a Wednesday; these are all local times
+	const wedMorning = new Date(2026, 7, 5, 9, 0).getTime();
+	const p = whenPresets(wedMorning);
+	const by = (label: string) => p.find((x) => x.label === label);
+
+	eq(!!by("Later today") && !!by("This evening"), true, "morning offers both of today's presets");
+	eq(by("Later today")!.ms, wedMorning + 3 * 3600000, "later today is three hours out");
+	eq(by("This evening")!.ms, new Date(2026, 7, 5, 18, 0).getTime(), "this evening is six in the evening");
+	eq(by("Tomorrow morning")!.ms, new Date(2026, 7, 6, 8, 0).getTime(), "tomorrow morning is eight the next day");
+	eq(by("Tomorrow afternoon")!.ms, new Date(2026, 7, 6, 13, 0).getTime(), "tomorrow afternoon is one the next day");
+	eq(by("This weekend")!.ms, new Date(2026, 7, 8, 8, 0).getTime(), "the weekend is the coming Saturday");
+	eq(by("Next week")!.ms, new Date(2026, 7, 10, 8, 0).getTime(), "next week is the coming Monday");
+
+	// nothing in the past is ever offered
+	const wedNight = new Date(2026, 7, 5, 22, 30).getTime();
+	const late = whenPresets(wedNight);
+	eq(!!late.find((x) => x.label === "Later today"), false, "late at night drops later today");
+	eq(!!late.find((x) => x.label === "This evening"), false, "and drops this evening too");
+	eq(late.every((x) => x.ms > wedNight), true, "every preset offered is still in the future");
+	eq(whenPresets(wedMorning).every((x) => x.ms > wedMorning), true, "and that holds in the morning as well");
+
+	// the weekend and the week roll over rather than landing on today
+	const sat = new Date(2026, 7, 8, 9, 0).getTime();
+	eq(whenPresets(sat).find((x) => x.label === "This weekend")!.ms, new Date(2026, 7, 15, 8, 0).getTime(), "asking on a Saturday means the next Saturday");
+	const mon = new Date(2026, 7, 10, 9, 0).getTime();
+	eq(whenPresets(mon).find((x) => x.label === "Next week")!.ms, new Date(2026, 7, 17, 8, 0).getTime(), "asking on a Monday means the next Monday");
+	const sun = new Date(2026, 7, 9, 9, 0).getTime();
+	eq(whenPresets(sun).find((x) => x.label === "Next week")!.ms, new Date(2026, 7, 10, 8, 0).getTime(), "asking on a Sunday means tomorrow");
+	eq(whenPresets(sun).find((x) => x.label === "This weekend")!.ms, new Date(2026, 7, 15, 8, 0).getTime(), "and the weekend from a Sunday is the coming Saturday");
+}
+
 // --- place lookup ---
 {
 	eq(splitPlaceQuery("Flower Mound, TX"), { name: "Flower Mound", region: "TX" }, "the comma form splits into city and region");
@@ -446,6 +1354,12 @@ eq(wallOfMs(msOfKey("2026-07-17") + 570 * 60000), "2026-07-17T09:30:00", "wall c
 	eq(body.subject, "Standup", "event body trims the title");
 	eq(body.location, { displayName: "Room 4" }, "event body carries the location");
 	eq(body.body, { contentType: "text", content: "agenda" }, "event body carries the description as text");
+	// a description from the rich editor has to declare itself, or the tags
+	// are shown to everyone invited instead of being rendered
+	const rich = graphEventBody({ title: "t", startMs: 0, endMs: 0, allDay: false, description: "<p>Agenda</p><ul><li>One</li></ul>" }, "UTC");
+	eq(rich.body, { contentType: "html", content: "<p>Agenda</p><ul><li>One</li></ul>" }, "markup goes as html");
+	eq((graphEventBody({ title: "t", startMs: 0, endMs: 0, allDay: false, description: "3 < 5 and 6 > 2" }, "UTC").body as { contentType: string }).contentType, "text", "a stray angle bracket does not make it html");
+	eq((graphEventBody({ title: "t", startMs: 0, endMs: 0, allDay: false, description: "" }, "UTC").body as { contentType: string }).contentType, "text", "an empty description stays text");
 	const bare = graphEventBody({ title: "", startMs: 0, endMs: 0, allDay: false }, "UTC");
 	eq(bare.subject, "(no title)", "an empty title still makes a subject");
 	eq("location" in bare, false, "omitted fields stay out of the body");
@@ -808,6 +1722,29 @@ const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-
 	eq(foldedInbox[0].expandable, true, "a collapsed folder still shows as expandable");
 	const foldedUpwork = orderFolderTree(folders, "in", new Set(["upwork"]));
 	eq(foldedUpwork.map((t) => t.folder.name), ["Inbox", "Darwin", "Upwork", "Von", "Drafts", "Stray"], "collapsing a nested folder hides only its children");
+	// a hand-made order leads; everything untouched keeps its alphabetical place
+	const custom = orderFolderTree(folders, "in", undefined, ["von", "darwin"]);
+	eq(custom.map((t) => t.folder.name), ["Inbox", "Von", "Darwin", "Upwork", "Good", "Drafts", "Stray"], "dragged folders lead their siblings in the dragged order");
+	eq(custom.map((t) => t.depth), [0, 1, 1, 1, 2, 0, 0], "and reordering does not disturb the nesting");
+	const one = orderFolderTree(folders, "in", undefined, ["upwork"]);
+	eq(one.map((t) => t.folder.name), ["Inbox", "Upwork", "Good", "Darwin", "Von", "Drafts", "Stray"], "ordering one folder leaves the rest alphabetical behind it");
+	eq(orderFolderTree(folders, "in", undefined, []).map((t) => t.folder.name), tree.map((t) => t.folder.name), "an empty custom order changes nothing");
+	eq(orderFolderTree(folders, "in", undefined, ["ghost"]).map((t) => t.folder.name), tree.map((t) => t.folder.name), "an id that is no longer a folder is ignored");
+	// the inbox is pinned to the top until it is itself dragged
+	eq(orderFolderTree(folders, "in", undefined, ["dr"])[0].folder.name, "Inbox", "ordering a sibling does not unseat the inbox");
+	eq(orderFolderTree(folders, "in", undefined, ["dr", "in"])[0].folder.name, "Drafts", "but dragging the inbox itself does");
+
+	// folders the mailbox runs on are not ours to rename or delete
+	eq(isSystemFolder("Inbox", "in", "in"), true, "the inbox is protected by its id");
+	eq(isSystemFolder("Anything", "in", "in"), true, "whatever it happens to be called");
+	eq(isSystemFolder("Sent Items", "x", "in"), true, "and the rest by name");
+	eq(isSystemFolder("deleted items", "x", "in"), true, "case does not matter");
+	eq(isSystemFolder("  Drafts  ", "x", "in"), true, "nor does stray space");
+	eq(isSystemFolder("Darwin", "darwin", "in"), false, "a folder you made is yours");
+	eq(isSystemFolder("Inbox Archive", "x", "in"), false, "a name that merely contains one is not one");
+	eq(isSystemFolder("", "x", "in"), false, "an empty name is not a system folder");
+	eq(isSystemFolder("Inbox", "x", null), true, "the name still guards when the inbox id is unknown");
+
 	eq(graphFolderToPC({ displayName: "x" }), null, "no id, no folder");
 	const subtree = folderSubtreeIds(folders, "in");
 	eq([...subtree].sort(), ["darwin", "good", "in", "upwork", "von"], "the inbox subtree reaches nested folders");
