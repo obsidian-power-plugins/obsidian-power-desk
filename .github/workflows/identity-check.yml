@@ -30,13 +30,40 @@ jobs:
           BRAND_NAME='Power Plugins'
           fail=0
 
-          while IFS='|' read -r sha an ae cn ce; do
-            if [ "$ae" != "$BRAND_EMAIL" ] || [ "$ce" != "$BRAND_EMAIL" ] \
-               || [ "$an" != "$BRAND_NAME" ] || [ "$cn" != "$BRAND_NAME" ]; then
+          while IFS='|' read -r sha an ae cn ce parents; do
+            # Clicking Merge on a pull request produces a commit that GitHub
+            # signs as itself, and no setting changes that. It is the button
+            # rather than a contribution, and refusing it would mean no pull
+            # request could ever land on a branch where this check is required.
+            # Only its committer is excused: the author is still the brand and
+            # is still checked, and the exemption is narrow enough that an
+            # ordinary commit cannot claim it, since it needs two parents and
+            # GitHub's own committer identity at once.
+            # written as plain ifs rather than `test && x`, because the job
+            # runs under bash -e and a bare failing test is a trap worth not
+            # setting for whoever edits this next
+            excuse_committer=0
+            case "$parents" in
+              *\ *)
+                if [ "$cn" = "GitHub" ] && [ "$ce" = "noreply@github.com" ]; then
+                  excuse_committer=1
+                fi
+                ;;
+            esac
+            bad=0
+            if [ "$ae" != "$BRAND_EMAIL" ] || [ "$an" != "$BRAND_NAME" ]; then
+              bad=1
+            fi
+            if [ "$excuse_committer" -eq 0 ]; then
+              if [ "$ce" != "$BRAND_EMAIL" ] || [ "$cn" != "$BRAND_NAME" ]; then
+                bad=1
+              fi
+            fi
+            if [ "$bad" -ne 0 ]; then
               echo "::error::$sha  author=$an <$ae>  committer=$cn <$ce>"
               fail=1
             fi
-          done < <(git log --format='%H|%an|%ae|%cn|%ce')
+          done < <(git log --format='%H|%an|%ae|%cn|%ce|%P')
 
           if git log --format='%B' | grep -qi '^co-authored-by:'; then
             echo "::error::a Co-Authored-By trailer is present in the history"
