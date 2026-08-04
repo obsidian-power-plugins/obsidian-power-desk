@@ -2868,3 +2868,79 @@ export function parseMessageBatch(json: unknown, ids: readonly string[]): BatchO
 	for (const id of ids) if (!seen.has(id)) failed.push(id);
 	return { ok, failed, retryAfterMs };
 }
+
+/* ---------------- keyed list reconciliation ---------------- */
+
+/** The slice of a DOM node this reconciler needs. Structural and generic in
+ *  its own sibling type, so the browser's Element satisfies it exactly and a
+ *  test can stand in a plain object without a cast. */
+export interface ReconcileNode<N> {
+	readonly isConnected: boolean;
+	readonly nextElementSibling: N | null;
+	remove(): void;
+}
+
+/** The slice of a DOM container this reconciler needs. */
+export interface ReconcileParent<N> {
+	readonly firstElementChild: N | null;
+	insertBefore(node: N, before: N | null): unknown;
+	empty(): void;
+}
+
+/** One thing that can appear in the column, and how to build it if it must. */
+export interface ReconcileItem<N> {
+	/** Stable across renders: the message id, the section name. Rows keyed by
+	 *  identity are what let mail arriving at the top insert one node instead
+	 *  of shifting every later one's description down and remaking the lot. */
+	key: string;
+	/** Everything the node would draw. Equal means leave it alone. */
+	sig: string;
+	/** Builds the node, APPENDED to the parent; the reconciler moves it. */
+	make: () => N;
+}
+
+export function reconcileChildren<N extends ReconcileNode<N>>(
+	parent: ReconcileParent<N>,
+	items: readonly ReconcileItem<N>[],
+	prev: Map<string, { sig: string; el: N }>
+): Map<string, { sig: string; el: N }> {
+	const next = new Map<string, { sig: string; el: N }>();
+	// nothing on screen survives (changing folder, say), and clearing the whole
+	// column at once beats unpicking it a node at a time
+	let anyKnown = false;
+	for (const item of items) {
+		if (prev.has(item.key)) {
+			anyKnown = true;
+			break;
+		}
+	}
+	if (!anyKnown) parent.empty();
+	let cursor: N | null = parent.firstElementChild;
+	for (const item of items) {
+		// two items can only share a key if the same message is listed twice,
+		// which grouping should never produce; disambiguate rather than let the
+		// second one quietly replace the first
+		let key = item.key;
+		for (let n = 2; next.has(key); n++) key = `${item.key}#${n}`;
+		const old = prev.get(key);
+		let el: N;
+		if (old && old.sig === item.sig && old.el.isConnected) el = old.el;
+		else {
+			// step the cursor off a node about to be removed: a detached cursor
+			// has no next sibling left to walk to
+			if (old?.el && old.el === cursor) cursor = cursor.nextElementSibling;
+			old?.el.remove();
+			el = item.make();
+		}
+		if (el === cursor) cursor = cursor.nextElementSibling;
+		else parent.insertBefore(el, cursor);
+		next.set(key, { sig: item.sig, el });
+	}
+	// whatever the new list has no place for
+	while (cursor) {
+		const after = cursor.nextElementSibling;
+		cursor.remove();
+		cursor = after;
+	}
+	return next;
+}

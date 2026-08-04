@@ -3438,21 +3438,25 @@ button.pcal-card-more .svg-icon {
 .pcal-mail-list {
 	--pcal-row-pad: 5px;
 	--pcal-avatar: 32px;
+	--pcal-row-est: 58px;
 }
 
 .pcal-mail-list.density-compact {
 	--pcal-row-pad: 2px;
 	--pcal-avatar: 26px;
+	--pcal-row-est: 46px;
 }
 
 .pcal-mail-list.density-cozy {
 	--pcal-row-pad: 5px;
 	--pcal-avatar: 32px;
+	--pcal-row-est: 58px;
 }
 
 .pcal-mail-list.density-comfortable {
 	--pcal-row-pad: 9px;
 	--pcal-avatar: 36px;
+	--pcal-row-est: 70px;
 }
 
 .pcal-mail-row {
@@ -3461,6 +3465,13 @@ button.pcal-card-more .svg-icon {
 	padding: var(--pcal-row-pad, 5px) 12px var(--pcal-row-pad, 5px) 10px;
 	border-bottom: 1px solid var(--background-modifier-border);
 	cursor: default;
+	/* A folder can hold well over a thousand of these, and laying out and
+	   painting the nine hundred nobody can see is work spent on nothing. This
+	   hands the browser the ones that are off screen to skip; the size hint
+	   keeps the scrollbar honest until a row has been drawn once, after which
+	   "auto" remembers what it actually measured. */
+	content-visibility: auto;
+	contain-intrinsic-size: auto var(--pcal-row-est, 58px);
 }
 
 /* Outlook tints the row under the pointer the same blue it uses for the
@@ -3776,9 +3787,11 @@ button.pcal-card-more .svg-icon {
 	--text-accent-hover: var(--pcal-mail-blue-hover);
 	--text-on-accent: #ffffff;
 	--background-modifier-active-hover: rgba(15, 108, 189, 0.13);
-	/* the message list's two blues: under the pointer, and picked */
-	--pcal-row-hover: rgba(15, 108, 189, 0.13);
-	--pcal-row-selected: rgba(15, 108, 189, 0.24);
+	/* the message list's two blues: under the pointer, and picked. Outlook's
+	   own, given outright rather than as a tint, so they land the same over
+	   whatever background the theme puts behind the list. */
+	--pcal-row-hover: rgb(230, 242, 250);
+	--pcal-row-selected: rgb(205, 230, 247);
 }
 
 .theme-dark .pcal-mail-root {

@@ -138,6 +138,10 @@ import {
 	wallOfMs,
 	weekDays,
 	workWeekDays,
+	reconcileChildren,
+	ReconcileNode,
+	ReconcileParent,
+	ReconcileItem,
 } from "../src/core";
 
 let failures = 0;
@@ -2059,4 +2063,109 @@ console.log("\nAll tests passed");
 	eq(versionFromManifest("{}"), null, "and neither does one with no version key");
 	eq(versionFromManifest('{"version":"1.2.3"}'), "1.2.3", "otherwise the version is read off it");
 	eq(versionFromManifest('{"version":"  "}'), null, "a blank version is no version");
+}
+
+/* ---------------- keyed list reconciliation ---------------- */
+{
+	// A minimal stand-in for the DOM: enough of a node and a parent for the
+	// reconciler to work against, so the real algorithm is under test rather
+	// than a paraphrase of it.
+	class Node implements ReconcileNode<Node> {
+		parent: Box | null = null;
+		constructor(public name: string) {}
+		get isConnected() {
+			return !!this.parent;
+		}
+		get nextElementSibling(): Node | null {
+			if (!this.parent) return null;
+			const i = this.parent.kids.indexOf(this);
+			return i >= 0 && i + 1 < this.parent.kids.length ? this.parent.kids[i + 1] : null;
+		}
+		remove() {
+			if (!this.parent) return;
+			const i = this.parent.kids.indexOf(this);
+			if (i >= 0) this.parent.kids.splice(i, 1);
+			this.parent = null;
+		}
+	}
+	class Box implements ReconcileParent<Node> {
+		kids: Node[] = [];
+		get firstElementChild() {
+			return this.kids[0] ?? null;
+		}
+		insertBefore(node: Node, before: Node | null) {
+			node.remove();
+			node.parent = this;
+			if (before === null) this.kids.push(node);
+			else this.kids.splice(this.kids.indexOf(before), 0, node);
+			return node;
+		}
+		empty() {
+			for (const k of this.kids) k.parent = null;
+			this.kids = [];
+		}
+		/** What make() does: append, for the reconciler to move into place. */
+		append(name: string) {
+			const n = new Node(name);
+			n.parent = this;
+			this.kids.push(n);
+			return n;
+		}
+		get order() {
+			return this.kids.map((k) => k.name).join(",");
+		}
+	}
+
+	let built = 0;
+	/** "A" is key A at signature v1; "A@v2" is the same row, redrawn. */
+	const spec = (list: string[], box: Box): ReconcileItem<Node>[] =>
+		list.map((entry) => {
+			const [key, sig] = entry.split("@");
+			return {
+				key,
+				sig: sig ?? "v1",
+				make: () => {
+					built++;
+					return box.append(key);
+				},
+			};
+		});
+
+	/** Draw `from`, then redraw as `to`, asserting the resulting order, how many
+	 *  nodes had to be built the second time, and that every row whose signature
+	 *  did not change is the very same node it was before. */
+	const redraw = (label: string, from: string[], to: string[], wantBuilt: number) => {
+		const box = new Box();
+		let state = reconcileChildren<Node>(box, spec(from, box), new Map());
+		const was = new Map(box.kids.map((k) => [k.name, k]));
+		built = 0;
+		state = reconcileChildren<Node>(box, spec(to, box), state);
+		eq(box.order, to.map((e) => e.split("@")[0]).join(","), `${label}: the column reads in order`);
+		eq(built, wantBuilt, `${label}: ${wantBuilt} built`);
+		const kept = to
+			.map((e) => e.split("@"))
+			.filter(([key, sig]) => was.has(key) && from.includes(sig ? `${key}@${sig}` : key))
+			.every(([key]) => state.get(key)?.el === was.get(key));
+		eq(kept, true, `${label}: unchanged rows are the same nodes`);
+	};
+
+	redraw("an untouched list", ["A", "B", "C"], ["A", "B", "C"], 0);
+	redraw("mail arriving at the top", ["A", "B", "C"], ["D", "A", "B", "C"], 1);
+	redraw("one message marked read", ["A", "B", "C"], ["A", "B@v2", "C"], 1);
+	redraw("the first row redrawn", ["A", "B", "C"], ["A@v2", "B", "C"], 1);
+	redraw("the last row redrawn", ["A", "B", "C"], ["A", "B", "C@v2"], 1);
+	redraw("a message deleted from the middle", ["A", "B", "C"], ["A", "C"], 0);
+	redraw("the first message deleted", ["A", "B", "C"], ["B", "C"], 0);
+	redraw("the last message deleted", ["A", "B", "C"], ["A", "B"], 0);
+	redraw("a re-sort, which moves rows rather than remaking them", ["A", "B", "C"], ["C", "B", "A"], 0);
+	redraw("changing folder", ["A", "B", "C"], ["X", "Y"], 2);
+	redraw("a folder that empties", ["A", "B", "C"], [], 0);
+	redraw("a folder that fills", [], ["A", "B"], 2);
+	redraw("a row inserted in the middle", ["A", "C"], ["A", "B", "C"], 1);
+	redraw("a section band redrawn between its rows", ["sec:1", "A", "sec:2", "B"], ["sec:1", "A", "sec:2@v2", "B"], 1);
+	redraw("a conversation expanding", ["A", "B"], ["A", "c:A1", "c:A2", "B"], 2);
+	redraw("a conversation collapsing", ["A", "c:A1", "c:A2", "B"], ["A", "B"], 0);
+	redraw("churn around one survivor", ["A", "B", "C"], ["X", "B", "Y"], 2);
+	// a key that appears twice must not let the second row replace the first
+	redraw("a duplicated key", ["A"], ["A", "A", "B"], 2);
 }

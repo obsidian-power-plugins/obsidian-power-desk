@@ -96,6 +96,7 @@ import { chunk, GRAPH_BATCH_MAX,
 	toGraphDateTime,
 	fromGraphDateTime,
 	splitSections,
+	reconcileChildren,
 	MailSection,
 	SectionKey,
 	UnsubscribeInfo,
@@ -591,7 +592,11 @@ const DEFAULT_SETTINGS: PCSettings = {
 	reminderMinutes: 5,
 	refreshMinutes: 5,
 	mailHistoryDays: 45,
-	mailMaxMessages: 50,
+	// deep enough that scrolling back and searching find something, which is
+	// the whole reason to hold mail locally. The list draws row by row rather
+	// than all at once, so a long list costs no more to keep current than a
+	// short one; what it costs is the first sync and the memory.
+	mailMaxMessages: 500,
 	agendaDays: 30,
 	notesFolder: "Calendar",
 	mailNotesFolder: "",
@@ -5122,12 +5127,14 @@ class MailView extends ItemView {
 	private sortBy: "date" | "from" | "subject" = "date";
 	private sortAsc = false;
 	private renderQueued = false;
-	/** What the drawn list and the drawn reading pane were built from. A
-	 *  refresh whose answer is the same list is the common case, and the two
-	 *  most expensive things this view does are rebuilding every row and
-	 *  re-sanitizing a message body; both are skipped when these still hold. */
-	private lastListSig: string | null = null;
-	private drawnRowCount = -1;
+	/** What is drawn in the message column right now, keyed by message id, with
+	 *  what each row was built from. A refresh whose answer is the same row
+	 *  leaves that row alone, which at fifteen hundred messages is the
+	 *  difference between remaking the list and touching nothing. */
+	private drawnItems = new Map<string, { sig: string; el: Element }>();
+	/** The same bargain for the two panes either side, which are cheap to
+	 *  describe and expensive to draw: the folder tree, and the reading pane,
+	 *  where a rebuild means re-sanitizing the whole message body. */
 	private lastReadSig: string | null = null;
 	private lastFolderSig: string | null = null;
 	/** Debounce on the search box: local search is cheap, not free. */
@@ -5615,8 +5622,7 @@ class MailView extends ItemView {
 		root.empty();
 		// the columns below are built fresh, so whatever the last open drew is
 		// gone; a stale signature would let the first render skip itself
-		this.lastListSig = null;
-		this.drawnRowCount = -1;
+		this.drawnItems.clear();
 		this.lastReadSig = null;
 		this.lastFolderSig = null;
 		root.addClass("pcal-mail-root");
@@ -6346,7 +6352,7 @@ class MailView extends ItemView {
 		const accounts = this.plugin.mailAccounts();
 		if (!accounts.length) {
 			this.listEl.empty();
-			this.lastListSig = null;
+			this.drawnItems.clear();
 			const empty = this.listEl.createDiv("pcal-empty");
 			empty.createDiv({ text: "No mail-enabled account. Reconnect a Microsoft account in settings to grant mail access." });
 			const b = empty.createEl("button", { text: "Open settings", cls: "mod-cta" });
@@ -6483,82 +6489,94 @@ class MailView extends ItemView {
 		// identical whether one line is showing or three
 		this.listEl.style.setProperty("--pcal-preview-lines", String(s.mailPreviewLines || 1));
 
-		// Nothing below here is free: a rebuild throws away every row, every
-		// avatar and a dozen listeners each, and takes the scroll position with
-		// it. notify() fires on every poll, every body that lands and every
-		// folder that syncs behind you, and the answer is the same list almost
-		// every time. So describe what the rows WOULD say, and only build them
-		// when that description changes.
-		const sig = this.listSignature(plan, { todayKey, showTags, threaded, split, errors, emptyText, nameMaps });
-		// which row is open is deliberately NOT in the signature: it is two
-		// class toggles, and putting it in would undo the whole point of
-		// paintSelection() by forcing a rebuild on the next refresh after a click
-		if (sig !== this.lastListSig || this.drawnRowCount !== rows.length) {
-			this.lastListSig = sig;
-			this.drawnRowCount = rows.length;
-			// the list is the scroll container; emptying it collapses the
-			// scrollHeight and the browser drops the position on the floor
-			const scroll = this.listEl.scrollTop;
-			this.listEl.empty();
-			for (const err of errors) this.listEl.createDiv({ cls: "pcal-mail-error", text: err });
-			if (emptyText) this.listEl.createDiv({ cls: "pcal-embed-empty", text: emptyText });
-			for (const part of plan) {
-				if (part.header) this.renderSectionHeader(part.header, collapsedSections.has(part.header.key));
-				for (const r of part.rows) this.renderRow(r, todayKey, nameMaps);
+		// Nothing below here is free. A row is about twenty elements and a dozen
+		// listeners, and notify() fires on every poll, every body that lands and
+		// every folder that syncs behind you. Rebuilding the list each time was
+		// survivable at fifty messages and is not at fifteen hundred: marking one
+		// message read would throw away and remake every other row on screen, and
+		// take the scroll position with it.
+		//
+		// So each thing that can appear in the column says what it would say, and
+		// only the ones whose answer changed are built. Mark one message read and
+		// exactly one row is remade; the other fourteen hundred and ninety-nine
+		// are left where they are.
+		const view = [
+			todayKey,
+			emptyText ?? "",
+			`${showTags ? 1 : 0}${threaded ? 1 : 0}${split ? 1 : 0}${this.selectMode ? 1 : 0}${s.use24h ? 1 : 0}${s.mailPhotos ? 1 : 0}`,
+			`${s.mailDensity}|${s.mailPreviewLines}|${this.multiSel.size}`,
+		].join(SIG_FIELD);
+		const items: ListItem[] = [];
+		errors.forEach((err, i) => items.push({ key: `err:${i}`, sig: err, make: () => this.listEl.createDiv({ cls: "pcal-mail-error", text: err }) }));
+		if (emptyText) items.push({ key: "empty", sig: emptyText, make: () => this.listEl.createDiv({ cls: "pcal-embed-empty", text: emptyText }) });
+		for (const part of plan) {
+			if (part.header) {
+				const sec = part.header;
+				const secCollapsed = collapsedSections.has(sec.key);
+				items.push({
+					key: `sec:${sec.key}`,
+					sig: `${sec.label}|${sec.messages.length}|${sec.messages.filter((x) => x.unread).length}|${secCollapsed ? 1 : 0}`,
+					make: () => this.renderSectionHeader(sec, secCollapsed),
+				});
 			}
-			this.markSelectionRuns();
-			if (scroll > 0) this.listEl.scrollTop = scroll;
-		} else this.syncSelectedRowClasses();
+			part.rows.forEach((r, i) => {
+				// a picked row whose neighbour below is also picked joins it into
+				// one block, so that neighbour is part of what this row draws
+				const below = part.rows[i + 1];
+				const runNext = !!below && below.targets.every((x) => this.multiSel.has(x.id));
+				items.push({
+					key: `${r.child ? "c" : "r"}:${r.m.id}`,
+					sig: `${view}${SIG_FIELD}${this.rowSignature(r, nameMaps)}${SIG_FIELD}${runNext ? 1 : 0}`,
+					make: () => this.renderRow(r, todayKey, nameMaps, runNext),
+				});
+			});
+		}
+		this.reconcileList(items);
+		// which row is open is deliberately absent from every signature above: it
+		// is two class toggles, and signing it would remake rows for a change
+		// paintSelection() already handles without touching one
+		this.syncSelectedRowClasses();
 		this.renderReading();
 	}
 
-	/** Everything the drawn list depends on, as one string.
+	/** Bring the drawn column into line with `items`, building only what is new
+	 *  or has changed and moving the rest into place.
+	 *
+	 *  Keyed by message id, so mail arriving at the top inserts rows rather than
+	 *  shifting every signature down one and remaking the lot. */
+	private reconcileList(items: ListItem[]) {
+		this.drawnItems = reconcileChildren<Element>(this.listEl, items, this.drawnItems);
+	}
+
+	/** Everything one drawn row depends on, as one string.
 	 *
 	 *  It has to name every value renderRow reads, because a field left out is
-	 *  a row that quietly stops updating. Building it costs a few hundred
-	 *  string joins against the thousands of DOM nodes it saves, and on the
-	 *  common case (a refresh that changed nothing) it saves all of them. */
-	private listSignature(
-		plan: { header: MailSection | null; rows: MailRow[] }[],
-		ctx: { todayKey: string; showTags: boolean; threaded: boolean; split: boolean; errors: string[]; emptyText: string | null; nameMaps: Map<string, Map<string, string>> | null }
-	): string {
+	 *  a row that quietly stops updating. Which row is open is the deliberate
+	 *  exception, handled by syncSelectedRowClasses instead. */
+	private rowSignature(r: MailRow, nameMaps: Map<string, Map<string, string>> | null): string {
 		const s = this.plugin.settings;
-		const parts: string[] = [
-			ctx.todayKey,
-			ctx.emptyText ?? "",
-			ctx.errors.join(SIG_FIELD),
-			`${ctx.showTags ? 1 : 0}${ctx.threaded ? 1 : 0}${ctx.split ? 1 : 0}${this.selectMode ? 1 : 0}${s.use24h ? 1 : 0}${s.mailPhotos ? 1 : 0}`,
-			`${s.mailDensity}|${s.mailPreviewLines}|${this.multiSel.size}`,
-			s.mailSectionsCollapsed.join(","),
-		];
-		for (const part of plan) {
-			if (part.header) parts.push(`#${part.header.key}|${part.header.label}|${part.header.messages.length}|${part.header.messages.filter((m) => m.unread).length}`);
-			for (const r of part.rows) {
-				const m = r.m;
-				const t = r.thread;
-				const collapsed = !!t && !this.expanded.has(t.key);
-				const mk = collapsed && t ? t : m;
-				parts.push(
-					[
-						m.id,
-						collapsed && t ? (t.unread > 0 ? 1 : 0) : m.unread ? 1 : 0,
-						r.child ? 1 : 0,
-						r.targets.every((x) => this.multiSel.has(x.id)) ? 1 : 0,
-						t ? `${t.key}/${t.messages.length}/${collapsed ? 1 : 0}/${t.senders.join("~")}` : "",
-						m.from,
-						m.subject,
-						m.receivedMs,
-						s.mailPreviewLines > 0 ? m.preview : "",
-						`${mk.hasAttachments ? 1 : 0}${mk.flagged ? 1 : 0}${mk.priority ? 1 : 0}`,
-						r.targets.every((x) => x.flagged) ? 1 : 0,
-						(m.categories ?? []).map((c) => `${c}=${this.plugin.categoryColorFor(m.accountId, c)}`).join("~"),
-						s.mailPhotos && this.plugin.photoFor(m.fromAddress) ? 1 : 0,
-						(ctx.nameMaps && m.folderId ? ctx.nameMaps.get(m.accountId)?.get(m.folderId) : "") ?? "",
-					].join(SIG_FIELD)
-				);
-			}
-		}
-		return parts.join(SIG_ROW);
+		const m = r.m;
+		const t = r.thread;
+		const collapsed = !!t && !this.expanded.has(t.key);
+		const mk = collapsed && t ? t : m;
+		return [
+			m.id,
+			collapsed && t ? (t.unread > 0 ? 1 : 0) : m.unread ? 1 : 0,
+			r.child ? 1 : 0,
+			r.targets.every((x) => this.multiSel.has(x.id)) ? 1 : 0,
+			t ? `${t.key}/${t.messages.length}/${collapsed ? 1 : 0}/${t.senders.join("~")}` : "",
+			m.from,
+			m.subject,
+			m.receivedMs,
+			s.mailPreviewLines > 0 ? m.preview : "",
+			`${mk.hasAttachments ? 1 : 0}${mk.flagged ? 1 : 0}${mk.priority ? 1 : 0}`,
+			r.targets.every((x) => x.flagged) ? 1 : 0,
+			(m.categories ?? []).map((c) => `${c}=${this.plugin.categoryColorFor(m.accountId, c)}`).join("~"),
+			s.mailPhotos && this.plugin.photoFor(m.fromAddress) ? 1 : 0,
+			(nameMaps && m.folderId ? nameMaps.get(m.accountId)?.get(m.folderId) : "") ?? "",
+			// the actions the row draws depend on what it answers for
+			r.targets.length,
+		].join(SIG_FIELD);
 	}
 
 	/** A standing reminder while an out-of-office is answering for you.
@@ -6592,7 +6610,7 @@ class MailView extends ItemView {
 
 	/** A section band in the split inbox: what it is, how much is in it, how
 	 *  much of that is unread, and a twisty to fold it away. */
-	private renderSectionHeader(sec: MailSection, collapsed: boolean) {
+	private renderSectionHeader(sec: MailSection, collapsed: boolean): HTMLElement {
 		const head = this.listEl.createDiv("pcal-mail-section");
 		head.toggleClass("is-collapsed", collapsed);
 		const tw = head.createSpan("pcal-mail-section-twist");
@@ -6609,6 +6627,7 @@ class MailView extends ItemView {
 			this.plugin.queueSave();
 			this.render();
 		});
+		return head;
 	}
 
 	/** One row of the message list.
@@ -6619,7 +6638,7 @@ class MailView extends ItemView {
 	 *  actions act on: a collapsed conversation answers for all of itself,
 	 *  which is what "archive this thread" has to mean, and every other row
 	 *  answers for itself alone. */
-	private renderRow(r: MailRow, todayKey: string, nameMaps: Map<string, Map<string, string>> | null) {
+	private renderRow(r: MailRow, todayKey: string, nameMaps: Map<string, Map<string, string>> | null, runNext: boolean): HTMLElement {
 		const s = this.plugin.settings;
 		const m = r.m;
 		const t = r.thread;
@@ -6628,6 +6647,11 @@ class MailView extends ItemView {
 		const anyUnread = collapsed && t ? t.unread > 0 : m.unread;
 		{
 			const row = this.listEl.createDiv("pcal-mail-row");
+			// whether the picked row below this one continues the block, so a run
+			// of them drops its inner separators. Decided here, where the row's
+			// neighbour is already known, rather than by a pass over the whole
+			// list afterwards that a partial update would have no reason to run.
+			row.toggleClass("is-multisel-run", runNext);
 			// resting on a row is as good a signal as a click that this is the
 			// one being read next, and it buys the fetch the time it takes to
 			// travel from the row to the mouse button
@@ -6877,22 +6901,7 @@ class MailView extends ItemView {
 				}
 				menu.showAtMouseEvent(e);
 			});
-		}
-	}
-
-	/** Which picked rows have another picked row directly beneath them, so a run
-	 *  of them can drop its inner separators and read as one block.
-	 *
-	 *  Every row is here already and every selection change redraws the list, so
-	 *  one pass at the end of a render answers a question the stylesheet used to
-	 *  ask with :has(+ …) and re-answer on every change anywhere in the list. The
-	 *  next SIBLING is the test, not the next row: a row that ends a section has
-	 *  a header under it, and its line stays. */
-	private markSelectionRuns() {
-		for (const row of Array.from(this.listEl.querySelectorAll<HTMLElement>(".pcal-mail-row"))) {
-			const next = row.nextElementSibling;
-			const run = !!next && next.hasClass("pcal-mail-row") && next.hasClass("is-multisel");
-			row.toggleClass("is-multisel-run", run);
+			return row;
 		}
 	}
 
@@ -10499,6 +10508,15 @@ class MailShortcutsModal extends Modal {
  * "A" then "BC" and a row would quietly stop redrawing. */
 const SIG_FIELD = "\u001f";
 const SIG_ROW = "\u001e";
+
+/** One thing that can appear in the message column: an error line, the empty
+ *  line, a section band, or a row. `sig` is everything it would draw, so an
+ *  unchanged one is left in place; `make` builds it when it is not. */
+interface ListItem {
+	key: string;
+	sig: string;
+	make: () => HTMLElement;
+}
 
 /** One visible row of the message list, with what it acts on. */
 interface MailRow {
