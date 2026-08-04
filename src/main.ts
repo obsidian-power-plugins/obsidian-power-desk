@@ -3636,15 +3636,15 @@ export default class PowerDeskPlugin extends Plugin {
 				const head = markdown.split("\n")[0];
 				if (had.includes(head)) {
 					new Notice("Power Desk: this day is already in that note.");
-					await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(existing);
+					await this.showNote(existing);
 					return true;
 				}
 				await this.app.vault.modify(existing, `${had.trimEnd()}\n\n${markdown}`);
-				await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(existing);
+				await this.showNote(existing);
 				return true;
 			}
 			const f = await this.app.vault.create(path, markdown);
-			await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(f);
+			await this.showNote(f);
 			return true;
 		} catch (e) {
 			new Notice("Power Desk: could not write that note. " + (e instanceof Error ? e.message : String(e)));
@@ -3727,11 +3727,11 @@ export default class PowerDeskPlugin extends Plugin {
 		const path = normalizePath(`${folder}/${sanitizeName(`${keyOfMs(n.changedMs || Date.now())} ${n.title}`)}.md`);
 		const existing = this.app.vault.getAbstractFileByPath(path);
 		if (existing instanceof TFile) {
-			await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(existing);
+			await this.showNote(existing);
 			return;
 		}
 		const f = await this.app.vault.create(path, `# ${n.title}\n\n${stripHtml(body)}\n`);
-		await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(f);
+		await this.showNote(f);
 	}
 
 	/* ----- tasks ----- */
@@ -4433,7 +4433,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const path = normalizePath(`${folder}/${sanitizeName(`${keyOfMs(m.receivedMs)} ${m.subject}`)}.md`);
 		const existing = this.app.vault.getAbstractFileByPath(path);
 		if (existing instanceof TFile) {
-			await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(existing);
+			await this.showNote(existing);
 			return;
 		}
 		const lines = [
@@ -4450,7 +4450,7 @@ export default class PowerDeskPlugin extends Plugin {
 			"",
 		];
 		const f = await this.app.vault.create(path, lines.join("\n"));
-		await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(f);
+		await this.showNote(f);
 		new Notice("Power Desk: mail saved to a note.");
 	}
 
@@ -4714,10 +4714,58 @@ export default class PowerDeskPlugin extends Plugin {
 		return this.app.vault.getAbstractFileByPath(this.eventNotePath(ev)) instanceof TFile;
 	}
 
+	/**
+	 * The main-area tab already showing this path, if there is one.
+	 *
+	 * Asked through `getViewState()` rather than `leaf.view.file`, because every
+	 * tab you are not standing in is deferred since 1.7.2: its view is a stand-in
+	 * that holds no file, and reaching for one to ask would load every tab in the
+	 * window. The view state carries the path whether the view is real or not.
+	 *
+	 * Main-area leaves only. A note showing in a sidebar is not a tab, and a note
+	 * deliberately popped out into a window of its own should not have the
+	 * calendar pulling focus to another window behind your back.
+	 */
+	private openLeafFor(path: string): WorkspaceLeaf | null {
+		const hits: WorkspaceLeaf[] = [];
+		this.app.workspace.iterateRootLeaves((leaf) => {
+			const open = leaf.getViewState().state?.file;
+			if (typeof open === "string" && open === path) hits.push(leaf);
+		});
+		return hits[0] ?? null;
+	}
+
+	/**
+	 * Show a note: step to the tab already holding it, or open a fresh one.
+	 *
+	 * Opening the same day, mail, or event note twice used to hand you a second
+	 * copy of it, because the open said only where to put a note and nothing
+	 * about where that note already was: two scroll positions, two undo
+	 * histories, and edits landing in whichever one you looked at last.
+	 *
+	 * The notesInNewTab setting still decides where a note lands the first time.
+	 * It reads as "do not take over the tab I am in", and stepping to the tab the
+	 * note is already in honors that just as well as making a new one, so a note
+	 * that is already open is shown rather than opened again either way. The
+	 * override is for the routes that never consulted the setting, because a base
+	 * file and a shortcut are not the notes it is about.
+	 */
+	async showNote(f: TFile, newTab = this.settings.notesInNewTab): Promise<WorkspaceLeaf> {
+		const open = this.openLeafFor(f.path);
+		if (open) {
+			await this.app.workspace.revealLeaf(open);
+			this.app.workspace.setActiveLeaf(open, { focus: true });
+			return open;
+		}
+		const leaf = this.app.workspace.getLeaf(newTab);
+		await leaf.openFile(f);
+		return leaf;
+	}
+
 	async openEventNote(ev: PCEvent) {
 		if (ev.notePath) {
 			const f = this.app.vault.getAbstractFileByPath(ev.notePath);
-			if (f instanceof TFile) await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(f);
+			if (f instanceof TFile) await this.showNote(f);
 			return;
 		}
 		const path = this.eventNotePath(ev);
@@ -4728,7 +4776,7 @@ export default class PowerDeskPlugin extends Plugin {
 			file = await this.app.vault.create(path, eventNoteContent(ev, this.settings.use24h));
 			this.notify(); // note dots update
 		}
-		if (file instanceof TFile) await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(file);
+		if (file instanceof TFile) await this.showNote(file);
 	}
 
 	private async ensureFolder(path: string) {
@@ -4759,7 +4807,7 @@ export default class PowerDeskPlugin extends Plugin {
 			await this.ensureFolder(folder);
 			f = await this.app.vault.create(path, `# ${sanitizeName(name)}\n`);
 		}
-		if (f instanceof TFile) await this.app.workspace.getLeaf(this.settings.notesInNewTab).openFile(f);
+		if (f instanceof TFile) await this.showNote(f);
 	}
 
 	/** Drop a ready-made Bases table over the event-notes folder (Power Bases'
@@ -4769,7 +4817,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const path = normalizePath(`${folder}/Events.base`);
 		const existing = this.app.vault.getAbstractFileByPath(path);
 		if (existing instanceof TFile) {
-			await this.app.workspace.getLeaf(false).openFile(existing);
+			await this.showNote(existing, false);
 			return;
 		}
 		const plugs = (this.app as unknown as { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins;
@@ -4794,7 +4842,7 @@ export default class PowerDeskPlugin extends Plugin {
 		await this.ensureFolder(folder);
 		const f = await this.app.vault.create(path, yaml);
 		new Notice("Power Desk: events base created.");
-		await this.app.workspace.getLeaf(false).openFile(f);
+		await this.showNote(f, false);
 	}
 
 	/* ---------------- view plumbing ---------------- */
@@ -8708,7 +8756,7 @@ class ShortcutsModal extends Modal {
 		else if (s.kind === "search") this.onSearch(s.target);
 		else if (s.kind === "note") {
 			const f = this.app.vault.getAbstractFileByPath(s.target);
-			if (f instanceof TFile) void this.app.workspace.getLeaf(false).openFile(f);
+			if (f instanceof TFile) void this.plugin.showNote(f, false);
 			else new Notice(`Power Desk: ${s.target} is not in the vault any more.`);
 		} else if (s.kind === "url") window.open(s.target, "_blank");
 		this.close();
