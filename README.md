@@ -248,6 +248,20 @@ Fetched calendars, inboxes, and folder trees are cached to a `cache.json` beside
 
 **Opening a message is meant to be instant**, and several things conspire to make it so. A screenful of bodies is fetched ahead of you, twenty per request, whenever a list is drawn. Resting the pointer on a row for a moment fetches that one. Opening a message fetches the next three below it and the one above, because reading is a direction. A body already in hand goes in before the first paint rather than a frame later, and moving the selection repaints two rows instead of rebuilding the list, the folder tree, and every avatar in it. Graph allows only a few requests at once per mailbox, so those are ranked: the message you just clicked jumps the queue, and prefetch is held to a single slot so it can never be the reason you are waiting. When a message really is cold, its first line shows immediately from what the list already knew while the rest travels. The one thing none of this can shorten is the first fetch of a mailbox on a new machine.
 
+### What the catalog's scan reports
+
+The community catalog scans a plugin for what it is *capable* of, which is not the same as what it does with it. Power Desk reports three things.
+
+| What the scan reports | What it is | Where |
+| --- | --- | --- |
+| **Vault enumeration** | Listing your notes, in two places: gathering events from a vault folder you nominated as a calendar source, and offering files in the attachment picker. Only the notes under a folder you chose are read. | [`src/main.ts`](src/main.ts) `vaultEvents`, the attachment picker |
+| **Clipboard access** | Writing, never reading. Eight places, each a button or a row you clicked: a message's text, an attachment's name, the day's agenda as Markdown, a person's email address, the Microsoft and Google device codes at sign-in, and two setup values on the Azure app page. Nothing reads your clipboard anywhere in this plugin. | [`src/main.ts`](src/main.ts), the copy buttons |
+| **Local network listener** | Google sign-in only. OAuth for a desktop app returns its result to a loopback address, so a server binds to `127.0.0.1` on an ephemeral port, catches the one redirect, and closes. It is bound to the loopback interface rather than to all of them, so nothing outside your machine can reach it, and a timer closes it whether or not the sign-in finishes. Microsoft sign-in uses the device-code flow and needs no listener. | [`src/google.ts`](src/google.ts) |
+
+**Mail is HTML written by whoever sent it,** which is the one place this plugin handles content it did not author. Every message body goes through Obsidian's own `sanitizeHTMLToDom` before it reaches the page, in the reading pane, in the print view, and in the quoted original of a reply. That matters more than it first looks: assigning HTML to a page would not run a `<script>` tag, but it would run an inline handler like `<img onerror=...>`, and the sanitizer is what removes those.
+
+There is no `eval`, no `Function` constructor, and no code fetched and run at runtime. Every network call goes through Obsidian's `requestUrl`; there is no `fetch` in the built `main.js` at all. No processes are started.
+
 Nothing beyond the hosts listed above is contacted, and no telemetry of any kind exists. The only calendar writes are the ones you make yourself: creating, moving, editing, or deleting a Microsoft 365 event sends exactly that change and nothing more. Sign-in tokens and CalDAV credentials are stored in this plugin's `data.json` inside your vault; if you sync your vault, they sync with it.
 
 ## Install
