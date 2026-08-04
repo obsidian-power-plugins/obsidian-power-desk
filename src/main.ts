@@ -2468,7 +2468,10 @@ export default class PowerDeskPlugin extends Plugin {
 		void this.fetchFolderMailFor(a, folderId);
 	}
 
-	private async fetchFolderMailFor(a: GraphAccount, folderId: string) {
+	/** `quiet` is the prefetcher warming a folder nobody has opened: it queues
+	 *  behind anything a person is waiting on, and it does not announce itself,
+	 *  since a list you cannot see changing is not news. */
+	private async fetchFolderMailFor(a: GraphAccount, folderId: string, quiet = false) {
 		const key = `${a.id}:${folderId}`;
 		const st = this.folderCache.get(key) ?? { messages: [], fetchedAt: 0, error: null, inFlight: false, deltaLink: null };
 		st.inFlight = true;
@@ -2486,39 +2489,45 @@ export default class PowerDeskPlugin extends Plugin {
 			}
 			if (oldest) this.folderCache.delete(oldest);
 		}
-		this.notify();
+		if (!quiet) this.notify();
 		try {
-			await this.mailboxGate(a.id, async () => {
-				if (folderId === UNREAD_FOLDER) {
-					const raw = await fetchUnreadMessages(await this.graphTokenFor(a));
-					const fresh = raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
-					// This folder is a question the mailbox answers afresh every
-					// time, so a message you have just read is simply not in the
-					// answer. Replacing the list wholesale would delete that row
-					// a moment after you marked it, leaving nothing to mark
-					// unread again; the ones you touched yourself keep their
-					// place until a refresh you actually asked for.
-					const ids = new Set(fresh.map((m) => m.id));
-					const kept = st.messages.filter((m) => this.recentlyMarked.has(m.id) && !ids.has(m.id));
-					// a mark still in flight means the mailbox can answer with the
-					// old state; what you did wins over what it has not heard yet,
-					// so a row does not go bold again for a moment
-					for (const m of fresh) {
-						const read = this.recentlyMarked.get(m.id);
-						if (read !== undefined) m.unread = !read;
+			await this.mailboxGate(
+				a.id,
+				async () => {
+					if (folderId === UNREAD_FOLDER) {
+						const raw = await fetchUnreadMessages(await this.graphTokenFor(a));
+						const fresh = raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
+						// This folder is a question the mailbox answers afresh every
+						// time, so a message you have just read is simply not in the
+						// answer. Replacing the list wholesale would delete that row
+						// a moment after you marked it, leaving nothing to mark
+						// unread again; the ones you touched yourself keep their
+						// place until a refresh you actually asked for.
+						const ids = new Set(fresh.map((m) => m.id));
+						const kept = st.messages.filter((m) => this.recentlyMarked.has(m.id) && !ids.has(m.id));
+						// a mark still in flight means the mailbox can answer with the
+						// old state; what you did wins over what it has not heard yet,
+						// so a row does not go bold again for a moment
+						for (const m of fresh) {
+							const read = this.recentlyMarked.get(m.id);
+							if (read !== undefined) m.unread = !read;
+						}
+						st.messages = [...fresh, ...kept].sort((x, y) => y.receivedMs - x.receivedMs);
+					} else {
+						await this.syncList(a, folderId, st);
 					}
-					st.messages = [...fresh, ...kept].sort((x, y) => y.receivedMs - x.receivedMs);
-				} else {
-					await this.syncList(a, folderId, st);
-				}
-			});
+				},
+				quiet ? "idle" : "soon"
+			);
 			st.error = null;
 		} catch (e) {
 			st.error = e instanceof Error ? e.message : String(e);
 		} finally {
 			st.fetchedAt = Date.now();
 			st.inFlight = false;
-			this.notify();
+			// a warmed folder nobody has opened has nothing to say; the folder
+			// pane's counts come from the tree, not from these lists
+			if (!quiet) this.notify();
 			this.queueCachePersist();
 		}
 	}
@@ -2545,7 +2554,7 @@ export default class PowerDeskPlugin extends Plugin {
 			for (const f of picks) {
 				const cached = this.folderCache.get(`${a.id}:${f.id}`);
 				if (cached && Date.now() - cached.fetchedAt < staleMs) continue;
-				await this.fetchFolderMailFor(a, f.id);
+				await this.fetchFolderMailFor(a, f.id, true);
 			}
 		} finally {
 			this.prefetchingFolders.delete(a.id);
@@ -2640,7 +2649,11 @@ export default class PowerDeskPlugin extends Plugin {
 		}
 		if (cached) {
 			this.queueCachePersist();
-			this.notify();
+			// A prefetched body is invisible by definition: nothing in the list
+			// draws body text, and the reading pane awaits its own message's
+			// body rather than waiting to be told. Notifying here redrew the
+			// whole view twice per poll for a result nobody could see.
+			if (!quiet) this.notify();
 		}
 		return cached;
 	}
@@ -5109,6 +5122,14 @@ class MailView extends ItemView {
 	private sortBy: "date" | "from" | "subject" = "date";
 	private sortAsc = false;
 	private renderQueued = false;
+	/** What the drawn list and the drawn reading pane were built from. A
+	 *  refresh whose answer is the same list is the common case, and the two
+	 *  most expensive things this view does are rebuilding every row and
+	 *  re-sanitizing a message body; both are skipped when these still hold. */
+	private lastListSig: string | null = null;
+	private drawnRowCount = -1;
+	private lastReadSig: string | null = null;
+	private lastFolderSig: string | null = null;
 	/** Debounce on the search box: local search is cheap, not free. */
 	private searchTypeTimer: number | null = null;
 	private readonly onData = () => this.queueRender();
@@ -5592,6 +5613,12 @@ class MailView extends ItemView {
 		this.plugin.listeners.add(this.onData);
 		const root = this.contentEl;
 		root.empty();
+		// the columns below are built fresh, so whatever the last open drew is
+		// gone; a stale signature would let the first render skip itself
+		this.lastListSig = null;
+		this.drawnRowCount = -1;
+		this.lastReadSig = null;
+		this.lastFolderSig = null;
 		root.addClass("pcal-mail-root");
 		const header = root.createDiv("pcal-mail-header");
 		this.backBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Back" } });
@@ -6316,9 +6343,10 @@ class MailView extends ItemView {
 		this.backBtn.toggle(this.drill && this.screen !== "folders");
 		this.foldToggleBtn.toggle(!this.drill);
 		this.refreshBtn.toggleClass("is-loading", this.plugin.anyMailInFlight());
-		this.listEl.empty();
 		const accounts = this.plugin.mailAccounts();
 		if (!accounts.length) {
+			this.listEl.empty();
+			this.lastListSig = null;
 			const empty = this.listEl.createDiv("pcal-empty");
 			empty.createDiv({ text: "No mail-enabled account. Reconnect a Microsoft account in settings to grant mail access." });
 			const b = empty.createEl("button", { text: "Open settings", cls: "mod-cta" });
@@ -6372,30 +6400,31 @@ class MailView extends ItemView {
 				this.selectedBody = null;
 			}
 		}
-		if (search?.error) this.listEl.createDiv({ cls: "pcal-mail-error", text: search.error });
-		else if (this.folderSel && !search) {
-			const err = this.plugin.folderMailError(this.folderSel.accountId, this.folderSel.folderId);
-			if (err) this.listEl.createDiv({ cls: "pcal-mail-error", text: err });
-		} else if (!search) {
-			for (const err of this.plugin.mailErrors()) this.listEl.createDiv({ cls: "pcal-mail-error", text: err });
-		}
-		if (!mail.length)
-			this.listEl.createDiv({
-				cls: "pcal-embed-empty",
-				text: search
-					? search.inFlight
-						? "Searching the mailbox..."
-						: search.scope === "local"
-							? "Nothing here yet. Press Enter to search the whole mailbox."
-							: "No matches."
-					: this.plugin.anyMailInFlight()
-						? "Loading..."
-						: s.mailUnreadOnly
-							? "No unread mail."
-							: this.folderSel
-								? "Nothing here."
-								: "Inbox zero.",
-			});
+		// errors and the empty line are worked out here but drawn with the rows,
+		// so the whole list is one comparison and one rebuild rather than a
+		// half-emptied column whenever a refresh changes nothing
+		const errors: string[] = search?.error
+			? [search.error]
+			: this.folderSel && !search
+				? [this.plugin.folderMailError(this.folderSel.accountId, this.folderSel.folderId)].filter((e): e is string => !!e)
+				: search
+					? []
+					: this.plugin.mailErrors();
+		const emptyText = mail.length
+			? null
+			: search
+				? search.inFlight
+					? "Searching the mailbox..."
+					: search.scope === "local"
+						? "Nothing here yet. Press Enter to search the whole mailbox."
+						: "No matches."
+				: this.plugin.anyMailInFlight()
+					? "Loading..."
+					: s.mailUnreadOnly
+						? "No unread mail."
+						: this.folderSel
+							? "Nothing here."
+							: "Inbox zero.";
 		// search results and the Unread folder both tag rows with their source folder
 		const showTags = !!search || this.folderSel?.folderId === UNREAD_FOLDER;
 		const nameMaps = showTags ? new Map(accounts.map((acc) => [acc.id, this.plugin.folderNamesFor(acc.id)])) : null;
@@ -6453,12 +6482,83 @@ class MailView extends ItemView {
 		// the preview clamp rides a custom property so the rows themselves stay
 		// identical whether one line is showing or three
 		this.listEl.style.setProperty("--pcal-preview-lines", String(s.mailPreviewLines || 1));
-		for (const part of plan) {
-			if (part.header) this.renderSectionHeader(part.header, collapsedSections.has(part.header.key));
-			for (const r of part.rows) this.renderRow(r, todayKey, nameMaps);
-		}
-		this.markSelectionRuns();
+
+		// Nothing below here is free: a rebuild throws away every row, every
+		// avatar and a dozen listeners each, and takes the scroll position with
+		// it. notify() fires on every poll, every body that lands and every
+		// folder that syncs behind you, and the answer is the same list almost
+		// every time. So describe what the rows WOULD say, and only build them
+		// when that description changes.
+		const sig = this.listSignature(plan, { todayKey, showTags, threaded, split, errors, emptyText, nameMaps });
+		// which row is open is deliberately NOT in the signature: it is two
+		// class toggles, and putting it in would undo the whole point of
+		// paintSelection() by forcing a rebuild on the next refresh after a click
+		if (sig !== this.lastListSig || this.drawnRowCount !== rows.length) {
+			this.lastListSig = sig;
+			this.drawnRowCount = rows.length;
+			// the list is the scroll container; emptying it collapses the
+			// scrollHeight and the browser drops the position on the floor
+			const scroll = this.listEl.scrollTop;
+			this.listEl.empty();
+			for (const err of errors) this.listEl.createDiv({ cls: "pcal-mail-error", text: err });
+			if (emptyText) this.listEl.createDiv({ cls: "pcal-embed-empty", text: emptyText });
+			for (const part of plan) {
+				if (part.header) this.renderSectionHeader(part.header, collapsedSections.has(part.header.key));
+				for (const r of part.rows) this.renderRow(r, todayKey, nameMaps);
+			}
+			this.markSelectionRuns();
+			if (scroll > 0) this.listEl.scrollTop = scroll;
+		} else this.syncSelectedRowClasses();
 		this.renderReading();
+	}
+
+	/** Everything the drawn list depends on, as one string.
+	 *
+	 *  It has to name every value renderRow reads, because a field left out is
+	 *  a row that quietly stops updating. Building it costs a few hundred
+	 *  string joins against the thousands of DOM nodes it saves, and on the
+	 *  common case (a refresh that changed nothing) it saves all of them. */
+	private listSignature(
+		plan: { header: MailSection | null; rows: MailRow[] }[],
+		ctx: { todayKey: string; showTags: boolean; threaded: boolean; split: boolean; errors: string[]; emptyText: string | null; nameMaps: Map<string, Map<string, string>> | null }
+	): string {
+		const s = this.plugin.settings;
+		const parts: string[] = [
+			ctx.todayKey,
+			ctx.emptyText ?? "",
+			ctx.errors.join(SIG_FIELD),
+			`${ctx.showTags ? 1 : 0}${ctx.threaded ? 1 : 0}${ctx.split ? 1 : 0}${this.selectMode ? 1 : 0}${s.use24h ? 1 : 0}${s.mailPhotos ? 1 : 0}`,
+			`${s.mailDensity}|${s.mailPreviewLines}|${this.multiSel.size}`,
+			s.mailSectionsCollapsed.join(","),
+		];
+		for (const part of plan) {
+			if (part.header) parts.push(`#${part.header.key}|${part.header.label}|${part.header.messages.length}|${part.header.messages.filter((m) => m.unread).length}`);
+			for (const r of part.rows) {
+				const m = r.m;
+				const t = r.thread;
+				const collapsed = !!t && !this.expanded.has(t.key);
+				const mk = collapsed && t ? t : m;
+				parts.push(
+					[
+						m.id,
+						collapsed && t ? (t.unread > 0 ? 1 : 0) : m.unread ? 1 : 0,
+						r.child ? 1 : 0,
+						r.targets.every((x) => this.multiSel.has(x.id)) ? 1 : 0,
+						t ? `${t.key}/${t.messages.length}/${collapsed ? 1 : 0}/${t.senders.join("~")}` : "",
+						m.from,
+						m.subject,
+						m.receivedMs,
+						s.mailPreviewLines > 0 ? m.preview : "",
+						`${mk.hasAttachments ? 1 : 0}${mk.flagged ? 1 : 0}${mk.priority ? 1 : 0}`,
+						r.targets.every((x) => x.flagged) ? 1 : 0,
+						(m.categories ?? []).map((c) => `${c}=${this.plugin.categoryColorFor(m.accountId, c)}`).join("~"),
+						s.mailPhotos && this.plugin.photoFor(m.fromAddress) ? 1 : 0,
+						(ctx.nameMaps && m.folderId ? ctx.nameMaps.get(m.accountId)?.get(m.folderId) : "") ?? "",
+					].join(SIG_FIELD)
+				);
+			}
+		}
+		return parts.join(SIG_ROW);
 	}
 
 	/** A standing reminder while an out-of-office is answering for you.
@@ -6537,6 +6637,19 @@ class MailView extends ItemView {
 			row.toggleClass("is-selected", this.selected?.id === m.id);
 			row.toggleClass("is-multisel", r.targets.every((x) => this.multiSel.has(x.id)));
 			row.toggleClass("is-threadchild", r.child);
+			// Outlook's read/unread gutter: the bar down the left edge is the
+			// unread mark AND the control that clears it. It thickens under the
+			// pointer so there is something to aim at, and a read row shows a
+			// hollow bar on hover so marking one back unread is the same gesture
+			// in the same place. Absolutely positioned, so widening it is paint
+			// alone and the row never reflows as the mouse crosses the list.
+			const gutter = row.createDiv("pcal-mail-readbar");
+			gutter.createDiv("pcal-mail-readbar-fill");
+			gutter.setAttribute("aria-label", anyUnread ? (collapsed ? "Mark conversation read" : "Mark read") : collapsed ? "Mark conversation unread" : "Mark unread");
+			gutter.addEventListener("click", (e) => {
+				e.stopPropagation();
+				for (const x of r.targets) void this.plugin.setMailRead(x, anyUnread);
+			});
 			// the twisty column exists on every row so the avatars line up
 			// whether or not a given row heads a conversation; CSS drops it
 			// entirely when the list is not grouped at all
@@ -6809,6 +6922,13 @@ class MailView extends ItemView {
 	private renderFolders(accounts: GraphAccount[], colorOf: Map<string, string>) {
 		const host = this.foldersEl;
 		if (!host) return;
+		// the same bargain as the message list: this tree is rebuilt from
+		// scratch on every notify, and a mail arriving in a folder you are not
+		// looking at changes nothing here except a count that may not have moved
+		const sig = this.folderSignature(accounts, colorOf);
+		if (sig === this.lastFolderSig) return;
+		this.lastFolderSig = sig;
+		const scroll = host.scrollTop;
 		host.empty();
 		const allRow = host.createDiv("pcal-folder-row");
 		allRow.toggleClass("is-selected", !this.folderSel);
@@ -7156,6 +7276,35 @@ class MailView extends ItemView {
 			addSearch.createSpan({ cls: "pcal-folder-name", text: "New search folder" });
 			addSearch.addEventListener("click", () => new SearchFolderModal(this.app, this.plugin, a, null, () => this.render()).open());
 		}
+		if (scroll > 0) host.scrollTop = scroll;
+	}
+
+	/** Everything the folder pane is drawn from, as one string: which folders
+	 *  exist, what they are called, what they are holding unread, which of them
+	 *  are folded away, pinned, hidden or open. */
+	private folderSignature(accounts: GraphAccount[], colorOf: Map<string, string>): string {
+		const s = this.plugin.settings;
+		const collapsed = new Set(s.mailCollapsed);
+		const parts: string[] = [
+			this.folderSel ? `${this.folderSel.accountId}/${this.folderSel.folderId}/${this.folderSel.name}` : "-",
+			s.mailCollapsed.join(","),
+			s.mailHiddenFolders.map((h) => `${h.accountId}/${h.folderId}`).join(","),
+			s.mailFavorites.map((f) => `${f.accountId}/${f.folderId}/${f.name ?? ""}/${f.indent ? 1 : 0}`).join(","),
+			s.mailSearchFolders.map((f) => `${f.accountId}/${f.id}/${f.name}`).join(","),
+		];
+		for (const a of accounts) {
+			parts.push(`@${a.id}|${this.plugin.nameOf(a)}|${colorOf.get(a.id) ?? ""}|${this.plugin.inboxIdFor(a) ?? ""}|${this.plugin.unreadSubtreeCount(a)}`);
+			if (collapsed.has(`acct:${a.id}`)) continue;
+			const tree = this.plugin.folderTreeFor(a);
+			if (!tree.length) parts.push("(loading)");
+			for (const { folder, depth, expandable } of tree) {
+				// a folded branch shows its subtree's total, so that is what has
+				// to be compared for it rather than its own count
+				const count = collapsed.has(folder.id) && expandable ? this.plugin.folderUnreadRollup(a.id, folder.id) : folder.unread;
+				parts.push(`${folder.id}|${folder.name}|${count}|${depth}|${expandable ? 1 : 0}`);
+			}
+		}
+		return parts.join(SIG_ROW);
 	}
 
 	/** Let a folder row take a dragged message. Only the rows of the account
@@ -7304,10 +7453,23 @@ class MailView extends ItemView {
 	 *  on screen no longer line up with the list they were built from, which
 	 *  is the one case that does need the real thing. */
 	private paintSelection(): boolean {
+		if (!this.syncSelectedRowClasses()) return false;
+		this.renderReading();
+		return true;
+	}
+
+	/** Move the is-selected class onto the open row and off every other one,
+	 *  without touching anything else. False when the drawn rows no longer line
+	 *  up with the list they were built from, which is the one case that needs
+	 *  the real thing.
+	 *
+	 *  Which row is open is deliberately absent from the list signature, so a
+	 *  render that follows a click does not rebuild the list just to move two
+	 *  classes; this is what puts them where they belong instead. */
+	private syncSelectedRowClasses(): boolean {
 		const rows = this.listEl?.querySelectorAll(".pcal-mail-row");
 		if (!rows || rows.length !== this.lastList.length) return false;
 		for (let i = 0; i < rows.length; i++) (rows[i] as HTMLElement).toggleClass("is-selected", this.lastList[i].id === this.selected?.id);
-		this.renderReading();
 		return true;
 	}
 
@@ -7473,9 +7635,19 @@ class MailView extends ItemView {
 	private renderReading() {
 		const host = this.readEl;
 		if (!host) return;
-		host.empty();
 		const m = this.selected;
 		for (const b of this.mailToolBtns) b.toggleClass("is-disabled", !m && this.multiSel.size === 0);
+		// Rebuilding this pane means sanitizing and re-parsing the whole message
+		// body, which for a newsletter is a great deal of HTML, and it takes the
+		// reading position with it: scroll halfway down a long mail, wait for the
+		// poll, and you are back at the top. It is called at the end of every
+		// render, so most of the time the answer is the same pane it already
+		// drew. Body text for a given id never changes, so a short description
+		// of what went in is enough to know nothing has to come out.
+		const sig = this.readingSignature(m);
+		if (sig === this.lastReadSig) return;
+		this.lastReadSig = sig;
+		host.empty();
 		if (!m) {
 			host.createDiv({ cls: "pcal-embed-empty", text: "Select a message." });
 			return;
@@ -7563,6 +7735,28 @@ class MailView extends ItemView {
 		// its own opening while the rest travels, rather than the word Loading
 		else if (this.selected?.preview) bodyHost.createDiv({ cls: "pcal-mail-read-pending", text: this.selected.preview });
 		else bodyHost.setText("Loading...");
+	}
+
+	/** Everything the reading pane is drawn from, as one string. Bodies are
+	 *  immutable per message id, so their lengths stand in for their contents;
+	 *  everything else that shows here is named outright. */
+	private readingSignature(m: PCMail | null): string {
+		if (!m) return "-";
+		const b = this.selectedBody;
+		const convo = this.lastThreads.find((t) => t.messages.length > 1 && t.messages.some((x) => x.id === m.id));
+		return [
+			m.id,
+			m.subject,
+			m.from,
+			m.fromAddress,
+			m.hasAttachments ? 1 : 0,
+			(m.categories ?? []).map((c) => `${c}=${this.plugin.categoryColorFor(m.accountId, c)}`).join("~"),
+			b ? `${b.html ? `h${b.html.length}` : `t${b.text.length}`}|${b.toLine}|${b.unsub ? 1 : 0}` : "-",
+			this.selectedAtts ? this.selectedAtts.map((a) => `${a.id}:${a.isInline ? 1 : 0}`).join("~") : "-",
+			this.inlineCids ? this.inlineCids.size : "-",
+			convo ? convo.messages.map((x) => `${x.id}${x.unread ? "!" : ""}`).join("~") : "-",
+			this.plugin.settings.use24h ? 1 : 0,
+		].join(SIG_FIELD);
 	}
 }
 
@@ -10298,6 +10492,13 @@ class MailShortcutsModal extends Modal {
 		this.contentEl.empty();
 	}
 }
+
+/* Separators for the list signature. Control characters, because the fields
+ * being joined are subjects and sender names, which can hold every printable
+ * character there is: without these, "AB" then "C" would sign identically to
+ * "A" then "BC" and a row would quietly stop redrawing. */
+const SIG_FIELD = "\u001f";
+const SIG_ROW = "\u001e";
 
 /** One visible row of the message list, with what it acts on. */
 interface MailRow {

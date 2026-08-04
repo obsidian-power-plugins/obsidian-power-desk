@@ -1785,9 +1785,54 @@ button.pcal-card-more .svg-icon {
 	font-weight: var(--font-normal);
 }
 
-/* unread: a firm bar, a bold name, an accent subject */
-.pcal-mail-row.is-unread {
-	box-shadow: inset 3px 0 0 var(--pcal-mail-blue, #0f6cbd);
+/* unread: a firm bar, a bold name, an accent subject. The bar is a real
+   element rather than an inset shadow, because in Outlook it is the control
+   that marks the message read as well as the mark itself. */
+.pcal-mail-readbar {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	/* exactly the row's own left padding, so the strip is a target of its own
+	   and never sits over the avatar beside it */
+	width: 10px;
+	display: flex;
+	align-items: stretch;
+	justify-content: flex-start;
+	cursor: pointer;
+	z-index: 1;
+}
+
+/* the painted part. Read rows keep the element (so the target is always
+   there) and simply show nothing in it until the pointer arrives. */
+.pcal-mail-readbar-fill {
+	width: 3px;
+	border-radius: 0 2px 2px 0;
+	background: transparent;
+	transition:
+		width 90ms ease-out,
+		background-color 90ms ease-out;
+}
+
+.pcal-mail-row.is-unread .pcal-mail-readbar-fill {
+	background: var(--pcal-mail-blue, #0f6cbd);
+}
+
+/* resting on the row thickens the bar: this is the affordance that says the
+   strip is clickable, and it is what makes a 3px mark hittable */
+.pcal-mail-row:hover .pcal-mail-readbar-fill {
+	width: 6px;
+}
+
+/* a read row shows a ghost of the bar on hover, so marking one back unread
+   is the same gesture in the same place rather than a hunt through a menu */
+.pcal-mail-row:not(.is-unread):hover .pcal-mail-readbar-fill {
+	background: color-mix(in srgb, var(--pcal-mail-blue, #0f6cbd) 40%, transparent);
+}
+
+.pcal-mail-readbar:hover .pcal-mail-readbar-fill {
+	width: 8px;
+	background: var(--pcal-mail-blue, #0f6cbd);
 }
 
 .pcal-mail-row.is-unread .pcal-mail-from {
@@ -3418,12 +3463,17 @@ button.pcal-card-more .svg-icon {
 	cursor: default;
 }
 
+/* Outlook tints the row under the pointer the same blue it uses for the
+   selection, a shade lighter. The theme's own grey hover reads as "nothing
+   in particular"; the blue reads as "this is the one", which is the whole
+   job of a hover in a triage list. The selected row sits a step deeper so
+   the two never blur together while the mouse is over the list. */
 .pcal-mail-row:hover {
-	background: var(--background-modifier-hover);
+	background: var(--pcal-row-hover);
 }
 
 .pcal-mail-row.is-selected {
-	background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+	background: var(--pcal-row-selected);
 }
 
 .pcal-mail-dot {
@@ -3726,6 +3776,9 @@ button.pcal-card-more .svg-icon {
 	--text-accent-hover: var(--pcal-mail-blue-hover);
 	--text-on-accent: #ffffff;
 	--background-modifier-active-hover: rgba(15, 108, 189, 0.13);
+	/* the message list's two blues: under the pointer, and picked */
+	--pcal-row-hover: rgba(15, 108, 189, 0.13);
+	--pcal-row-selected: rgba(15, 108, 189, 0.24);
 }
 
 .theme-dark .pcal-mail-root {
@@ -3735,6 +3788,8 @@ button.pcal-card-more .svg-icon {
 	--color-accent-2: #4a9ce0;
 	--text-on-accent: #0b1c2c;
 	--background-modifier-active-hover: rgba(108, 184, 246, 0.16);
+	--pcal-row-hover: rgba(108, 184, 246, 0.16);
+	--pcal-row-selected: rgba(108, 184, 246, 0.28);
 }
 
 /* the subject carries that blue on every row, read or unread, which is how
@@ -4098,6 +4153,11 @@ button.pcal-card-more .svg-icon {
 @media (prefers-reduced-motion: reduce) {
 	.pcal-remind {
 		animation: none;
+	}
+
+	/* the bar still widens under the pointer, it just arrives at once */
+	.pcal-mail-readbar-fill {
+		transition: none;
 	}
 }
 
