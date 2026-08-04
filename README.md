@@ -2,9 +2,9 @@
 
 Your calendars and mail inside Obsidian: Microsoft 365 (several accounts at once), Google Calendar, CalDAV (iCloud, Fastmail, Nextcloud), and ICS feeds in month, week, day, and agenda views, a triage inbox beside them, and a linked note for every event.
 
-[![Buy me a coffee](https://cdn.buymeacoffee.com/buttons/default-yellow.png)](https://buymeacoffee.com/powerplugins)
-
 ![A week view of a calendar with a recurring morning standup Monday through Friday, several timed meetings, a month picker and an agenda rail down the left side, and view switchers for month, week, work week, day and agenda](docs/images/week-view.png)
+
+[![Buy me a coffee](docs/images/buy-me-a-coffee.png)](https://buymeacoffee.com/powerplugins)
 
 Week view with the month picker and an agenda rail beside it. The source here is **Vault notes**, which turns any note with a date property into an event, so a vault can
 fill a calendar with no account connected at all. Month, work week, day, and agenda sit
