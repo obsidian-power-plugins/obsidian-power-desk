@@ -729,7 +729,10 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  differs from this in memory is OUR change, and only those keys may
 	 *  overwrite a synced data.json; see persistSettings(). */
 	private baseline: PCSettings = DEFAULT_SETTINGS;
-	private externalReloadTimer: number | null = null;
+	/** data.json's size and mtime as we last saw them, so the desktop poll can
+	 *  tell a file someone else wrote from one nobody touched, without reading
+	 *  it; see watchDataFile(). */
+	private dataStamp: string | null = null;
 	private autoTimer: number | null = null;
 
 	async onload() {
@@ -1116,25 +1119,43 @@ export default class PowerDeskPlugin extends Plugin {
 		await this.adoptExternalData();
 	}
 
-	/** Desktop: watch the plugin folder so external edits are adopted quickly. */
+	private dataPath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/data.json`;
+	}
+
+	/**
+	 * Desktop: notice that someone else rewrote data.json, so external edits are
+	 * adopted while you are looking rather than at the next restart.
+	 *
+	 * onExternalSettingsChange covers Obsidian's own Sync. A folder sync
+	 * (Dropbox, OneDrive, Drive) landing another device's settings is a plainer
+	 * event than that, and can arrive unannounced, so the file's own size and
+	 * mtime are the signal. Asking the vault adapter for them keeps this inside
+	 * the vault: it stats one known file under the config folder, never reaches
+	 * for a path of its own, and reads nothing until the stamp actually moves.
+	 * Our own saves move it too, and cost one wasted read that adoptExternalData
+	 * recognizes as its own echo and drops.
+	 */
 	private watchDataFile() {
 		if (!Platform.isDesktopApp) return;
-		const basePath = (this.app.vault.adapter as unknown as { basePath?: string }).basePath;
-		if (!basePath) return;
+		this.registerInterval(window.setInterval(() => void this.checkDataFile(), 5000));
+		// coming back to the window is when another device's change is most
+		// likely to be sitting there waiting, so look straight away
+		this.registerDomEvent(window, "focus", () => void this.checkDataFile());
+	}
+
+	private async checkDataFile() {
+		if (this.busySaving()) return; // our own write is on its way; let it land
 		try {
-			const fs = require("node:fs") as typeof import("node:fs");
-			const dir = [basePath, this.app.vault.configDir, "plugins", this.manifest.id].join("/");
-			const watcher = fs.watch(dir, (_evt, name) => {
-				if (name && name.toString() !== "data.json") return;
-				if (this.externalReloadTimer != null) window.clearTimeout(this.externalReloadTimer);
-				this.externalReloadTimer = window.setTimeout(() => {
-					this.externalReloadTimer = null;
-					void this.adoptExternalData();
-				}, 300);
-			});
-			this.register(() => watcher.close());
+			const st = await this.app.vault.adapter.stat(this.dataPath());
+			if (!st) return;
+			const stamp = `${st.mtime}:${st.size}`;
+			const first = this.dataStamp === null;
+			if (stamp === this.dataStamp) return;
+			this.dataStamp = stamp;
+			if (!first) await this.adoptExternalData();
 		} catch {
-			/* watcher unavailable; onExternalSettingsChange still covers sync */
+			/* unreadable this moment (a sync mid-swap); the next tick tries again */
 		}
 	}
 
