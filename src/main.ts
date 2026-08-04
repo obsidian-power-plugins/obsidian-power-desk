@@ -1,4 +1,4 @@
-import { App, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
+import { App, ButtonComponent, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, SliderComponent, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
 import { chunk, GRAPH_BATCH_MAX,
 	DayCell,
 	EventDraft,
@@ -143,7 +143,6 @@ import { chunk, GRAPH_BATCH_MAX,
 	RepeatKind,
 	sanitizeName,
 	snapMin,
-	sortEvents,
 	spansForRow,
 	stepAnchor,
 	slotConflict,
@@ -329,7 +328,7 @@ interface GraphAccount {
 	expiry: number;
 	grantedScope: string;
 	calendars: GraphCalendar[];
-	/** Show this account's inbox in the Mail view; undefined means yes. */
+	/** Show this account's inbox in the mail view; undefined means yes. */
 	mail?: boolean;
 }
 
@@ -660,6 +659,29 @@ function pickIcon(...names: string[]): string {
 	return names[names.length - 1];
 }
 
+/** Paint a button as destructive.
+ *
+ *  `setDestructive` arrived in 1.13 and this plugin's floor is 1.8.7, where
+ *  calling it would throw, so the old `setWarning` has to stay reachable. The
+ *  cast is the runtime check: the inline type carries no deprecation, which is
+ *  also what keeps the fallback from being reported as one. */
+function markDestructive(b: ButtonComponent): ButtonComponent {
+	const btn = b as unknown as { setDestructive?: () => void; setWarning: () => void };
+	if (btn.setDestructive) btn.setDestructive();
+	else btn.setWarning();
+	return b;
+}
+
+/** Keep a slider's value visible while it is dragged.
+ *
+ *  1.13 shows it inline and retired `setDynamicTooltip`, but on 1.8.7 the call
+ *  is the only thing that shows the number at all, so it is reached through a
+ *  cast rather than named: absent on new builds, harmless on old ones. */
+function showSliderValue(sl: SliderComponent): SliderComponent {
+	(sl as unknown as { setDynamicTooltip?: () => void }).setDynamicTooltip?.();
+	return sl;
+}
+
 /* ---------------- sources ---------------- */
 
 type SourceDef =
@@ -759,7 +781,7 @@ export default class PowerDeskPlugin extends Plugin {
 		this.addCommand({
 			id: "mail-palette",
 			icon: "search",
-			name: "Mail command palette",
+			name: "Mail actions",
 			callback: () => {
 				void this.openMailView().then(() => {
 					const v = this.app.workspace.getLeavesOfType(VIEW_TYPE_MAIL)[0]?.view;
@@ -3003,7 +3025,7 @@ export default class PowerDeskPlugin extends Plugin {
 		}, secs * 1000);
 		this.pendingSends.set(id, { timer, fire: opts.fire });
 
-		const frag = document.createDocumentFragment();
+		const frag = createFragment();
 		const wrap = frag.createDiv("pcal-undo-notice");
 		wrap.createSpan({ text: `Sending "${opts.label}"` });
 		const btn = wrap.createEl("button", { text: "Undo" });
@@ -3440,7 +3462,7 @@ export default class PowerDeskPlugin extends Plugin {
 		if (this.told.size > 500) this.told = new Set([...this.told].slice(-300));
 
 		const { title, body } = arrivalSummary(arrivals);
-		const frag = document.createDocumentFragment();
+		const frag = createFragment();
 		const wrap = frag.createDiv("pcal-newmail-notice");
 		wrap.createDiv({ cls: "pcal-newmail-from", text: title });
 		wrap.createDiv({ cls: "pcal-newmail-subject", text: body });
@@ -3632,14 +3654,15 @@ export default class PowerDeskPlugin extends Plugin {
 		const existing = this.app.vault.getAbstractFileByPath(path);
 		try {
 			if (existing instanceof TFile) {
-				const had = await this.app.vault.read(existing);
 				const head = markdown.split("\n")[0];
-				if (had.includes(head)) {
-					new Notice("Power Desk: this day is already in that note.");
-					await this.showNote(existing);
-					return true;
-				}
-				await this.app.vault.modify(existing, `${had.trimEnd()}\n\n${markdown}`);
+				let already = false;
+				// read and write in one atomic step, so an edit landing between
+				// the duplicate check and the append cannot be lost
+				await this.app.vault.process(existing, (data) => {
+					already = data.includes(head);
+					return already ? data : `${data.trimEnd()}\n\n${markdown}`;
+				});
+				if (already) new Notice("Power Desk: this day is already in that note.");
 				await this.showNote(existing);
 				return true;
 			}
@@ -5072,7 +5095,7 @@ class MailView extends ItemView {
 		// reach the field untouched. Returning true lets it through.
 		const guard = (evt: KeyboardEvent, cb: () => void) => {
 			const t = evt.target as HTMLElement | null;
-			if (t && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t.isContentEditable)) return true;
+			if (t && (t.instanceOf(HTMLInputElement) || t.instanceOf(HTMLTextAreaElement) || t.isContentEditable)) return true;
 			cb();
 			return false;
 		};
@@ -6245,7 +6268,7 @@ class MailView extends ItemView {
 	private queueRender() {
 		if (this.renderQueued) return;
 		this.renderQueued = true;
-		requestAnimationFrame(() => {
+		window.requestAnimationFrame(() => {
 			this.renderQueued = false;
 			this.render();
 		});
@@ -6823,7 +6846,7 @@ class MailView extends ItemView {
 							}).open()
 						)
 					);
-					menu.addItem((i) => i.setTitle("Remove from Favorites").onClick(() => this.toggleFavorite(acc.id, fav.folderId)));
+					menu.addItem((i) => i.setTitle("Remove from favorites").onClick(() => this.toggleFavorite(acc.id, fav.folderId)));
 					menu.showAtMouseEvent(e);
 				});
 				row.draggable = true;
@@ -6956,7 +6979,7 @@ class MailView extends ItemView {
 				row.addEventListener("contextmenu", (e) => {
 					e.preventDefault();
 					const menu = new Menu();
-					menu.addItem((i) => i.setTitle(this.isFavorite(a.id, folder.id) ? "Remove from Favorites" : "Add to Favorites").onClick(() => this.toggleFavorite(a.id, folder.id)));
+					menu.addItem((i) => i.setTitle(this.isFavorite(a.id, folder.id) ? "Remove from favorites" : "Add to favorites").onClick(() => this.toggleFavorite(a.id, folder.id)));
 					menu.addItem((i) =>
 						i.setTitle("Hide folder").onClick(() => {
 							this.plugin.settings.mailHiddenFolders = [...this.plugin.settings.mailHiddenFolders, { accountId: a.id, folderId: folder.id }];
@@ -7049,7 +7072,7 @@ class MailView extends ItemView {
 			unreadRow.addEventListener("contextmenu", (e) => {
 				e.preventDefault();
 				const menu = new Menu();
-				menu.addItem((i) => i.setTitle(this.isFavorite(a.id, UNREAD_FOLDER) ? "Remove from Favorites" : "Add to Favorites").onClick(() => this.toggleFavorite(a.id, UNREAD_FOLDER)));
+				menu.addItem((i) => i.setTitle(this.isFavorite(a.id, UNREAD_FOLDER) ? "Remove from favorites" : "Add to favorites").onClick(() => this.toggleFavorite(a.id, UNREAD_FOLDER)));
 				menu.showAtMouseEvent(e);
 			});
 			for (const sf of this.plugin.settings.mailSearchFolders.filter((x) => x.accountId === a.id)) {
@@ -10285,7 +10308,7 @@ class PowerCalendarView extends ItemView {
 		const key = (k: string, cb: () => void) =>
 			(this.scope as Scope).register([], k, (evt) => {
 				const t = evt.target as HTMLElement | null;
-				if (t && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t.isContentEditable)) return true;
+				if (t && (t.instanceOf(HTMLInputElement) || t.instanceOf(HTMLTextAreaElement) || t.isContentEditable)) return true;
 				cb();
 				return false;
 			});
@@ -10639,12 +10662,9 @@ class PowerCalendarView extends ItemView {
 						if (!sub) return;
 						PALETTE.forEach((hex, idx) => {
 							sub.addItem((si) => {
-								const frag = document.createDocumentFragment();
-								const dot = document.createElement("span");
-								dot.className = "pcal-sb-menu-dot";
-								dot.style.background = hex;
-								frag.appendChild(dot);
-								frag.appendChild(document.createTextNode(SIDEBAR_COLOR_NAMES[idx] ?? hex));
+								const frag = createFragment();
+								frag.createSpan("pcal-sb-menu-dot").style.background = hex;
+								frag.appendText(SIDEBAR_COLOR_NAMES[idx] ?? hex);
 								si.setTitle(frag)
 									.setChecked(it.color.toLowerCase() === hex)
 									.onClick(() => {
@@ -11034,7 +11054,7 @@ class PowerCalendarView extends ItemView {
 	private queueRender() {
 		if (this.renderQueued) return;
 		this.renderQueued = true;
-		requestAnimationFrame(() => {
+		window.requestAnimationFrame(() => {
 			this.renderQueued = false;
 			this.render();
 		});
@@ -11310,7 +11330,7 @@ class PowerCalendarView extends ItemView {
 		cols.createDiv("pcal-now-line-week");
 		gutter.createDiv("pcal-now-badge");
 		this.positionNowLine();
-		requestAnimationFrame(() => {
+		window.requestAnimationFrame(() => {
 			scroll.scrollTop = Math.max(0, this.plugin.settings.dayStartHour * HOUR_H - 8);
 		});
 	}
@@ -12090,7 +12110,7 @@ class EventModal extends Modal {
 			const track = r.createDiv("pcal-avail-track");
 			if (row.error) {
 				track.addClass("is-unknown");
-				track.setText("no visibility");
+				track.setText("No visibility");
 				r.createDiv({ cls: "pcal-avail-verdict", text: "?" });
 				continue;
 			}
@@ -12159,7 +12179,7 @@ class DeviceCodeModal extends Modal {
 			cls: "pcal-modal-desc",
 			text: "Sign in with your Microsoft account so Power Desk can read your calendar. Open the page, enter the code, and approve. This window finishes automatically.",
 		});
-		c.createEl("div", { cls: "pcal-devicecode", text: this.dc.user_code });
+		c.createDiv({ cls: "pcal-devicecode", text: this.dc.user_code });
 		const row = c.createDiv({ cls: "pcal-modal-btns pcal-left" });
 		row.createEl("button", { text: "Copy code" }).addEventListener("click", () => {
 			void navigator.clipboard.writeText(this.dc.user_code);
@@ -12971,7 +12991,7 @@ class GraphAccountWizard extends Modal {
 				row.createDiv({ cls: "pcal-guide-field-value", text: value });
 			};
 			line("Calendars", `${a.calendars.length} found, all enabled; toggles and colors are in settings`);
-			line("Mail", this.plugin.canMailAccount(a) ? "inbox available in the Mail view" : "not granted");
+			line("Mail", this.plugin.canMailAccount(a) ? "inbox available in the mail view" : "not granted");
 			line("App registration", a.clientId.trim() && a.clientId.trim() !== this.plugin.effectiveClientId() ? "this account's own, remembered on it" : "the shared app");
 		}
 		this.footer(c, [
@@ -13632,7 +13652,7 @@ class PCSettingTab extends PluginSettingTab {
 			}
 		}
 
-		const setVisible = (el: HTMLElement, v: boolean) => (el.style.display = v ? "" : "none");
+		const setVisible = (el: HTMLElement, v: boolean) => el.toggleClass("pcal-hidden", !v);
 		const applyView = () => {
 			const q = this.query.trim().toLowerCase();
 			setVisible(tabBar, !q);
@@ -13744,7 +13764,7 @@ class PCSettingTab extends PluginSettingTab {
 						});
 					})
 				);
-			row.addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => this.plugin.removeGraphAccount(a)));
+			row.addButton((b) => markDestructive(b.setButtonText("Remove")).onClick(() => this.plugin.removeGraphAccount(a)));
 			if (!open) continue;
 			const nameSt = new Setting(host)
 				.setName("Name")
@@ -13764,7 +13784,7 @@ class PCSettingTab extends PluginSettingTab {
 			this.addHelp(nameSt, "What this account is called throughout the plugin: in the calendar's source list, on mail, and in the account picker. Handy when two accounts share a provider (work and personal Microsoft) and the addresses are the only thing telling them apart. Leaving it empty falls back to the address itself.");
 			if (this.plugin.canMailAccount(a)) {
 				const mailSt = new Setting(host)
-					.setName("Inbox in the Mail view")
+					.setName("Inbox in the mail view")
 					.setClass("pcal-subsetting")
 					.addToggle((t) =>
 						t.setValue(a.mail !== false).onChange((v) => {
@@ -13773,7 +13793,7 @@ class PCSettingTab extends PluginSettingTab {
 							this.plugin.mailChanged();
 						})
 					);
-				this.addHelp(mailSt, "Whether this account's inbox appears in the Mail view. Turning it off leaves the account's calendars syncing normally and simply stops its mail from showing, which is what you want for an account you read elsewhere.");
+				this.addHelp(mailSt, "Whether this account's inbox appears in the mail view. Turning it off leaves the account's calendars syncing normally and simply stops its mail from showing, which is what you want for an account you read elsewhere.");
 			}
 			for (const cal of a.calendars) {
 				new Setting(host)
@@ -13827,7 +13847,7 @@ class PCSettingTab extends PluginSettingTab {
 						});
 					})
 				);
-			row.addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => this.plugin.removeGoogleAccount(g)));
+			row.addButton((b) => markDestructive(b.setButtonText("Remove")).onClick(() => this.plugin.removeGoogleAccount(g)));
 			if (!open) continue;
 			const nameSt = new Setting(host)
 				.setName("Name")
@@ -13890,7 +13910,7 @@ class PCSettingTab extends PluginSettingTab {
 					})
 				)
 				.addButton((b) =>
-					b.setButtonText("Remove").setWarning().onClick(() => {
+					markDestructive(b.setButtonText("Remove")).onClick(() => {
 						s.caldavAccounts = s.caldavAccounts.filter((a) => a.id !== account.id);
 						save();
 						this.plugin.sourcesChanged();
@@ -13957,7 +13977,7 @@ class PCSettingTab extends PluginSettingTab {
 					})
 				)
 				.addButton((b) =>
-					b.setButtonText("Remove").setWarning().onClick(() => {
+					markDestructive(b.setButtonText("Remove")).onClick(() => {
 						s.icsFeeds = s.icsFeeds.filter((f) => f.id !== feed.id);
 						save();
 						this.plugin.sourcesChanged();
@@ -14005,7 +14025,7 @@ class PCSettingTab extends PluginSettingTab {
 					})
 				)
 				.addButton((b) =>
-					b.setButtonText("Remove").setWarning().onClick(() => {
+					markDestructive(b.setButtonText("Remove")).onClick(() => {
 						s.vaultSources = s.vaultSources.filter((x) => x.id !== v.id);
 						save();
 						this.plugin.sourcesChanged();
@@ -14335,10 +14355,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "How far ahead the agenda view lists, in days. A longer window means one scroll shows more of what is coming, at the cost of a busier list.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(7, 90, 1)
 							.setValue(s.agendaDays)
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.agendaDays = v;
 								st.setDesc(`${v} days`);
@@ -14354,10 +14373,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "Where the week and day grids scroll to when they open. The whole 24 hours stay reachable; this only picks the first hour in view.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(0, 12, 1)
 							.setValue(s.dayStartHour)
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.dayStartHour = v;
 								st.setDesc(`${v}:00`);
@@ -14415,10 +14433,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "While Obsidian is open, a sticky notice appears before each timed meeting, with a Join button when there is a link. Declined meetings and all-day events stay quiet.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(0, 30, 1)
 							.setValue(s.reminderMinutes)
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.reminderMinutes = v;
 								st.setDesc(v > 0 ? `${v} minutes before` : "Off");
@@ -14433,10 +14450,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "How often connected calendars and mail are re-fetched while Obsidian is open. Shorter means fresher and more requests; 0 turns the timer off so nothing is fetched until you refresh by hand.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(0, 60, 1)
 							.setValue(s.refreshMinutes)
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.refreshMinutes = v;
 								st.setDesc(v > 0 ? `Every ${v} minute${v === 1 ? "" : "s"}` : "Manual only (R or the refresh button)");
@@ -14456,10 +14472,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "The earliest hour the free-slot finder will suggest. It never proposes a meeting before this, so an early calendar block does not turn into a breakfast invitation.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(5, 12, 1)
 							.setValue(s.freeFromHour)
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.freeFromHour = v;
 								st.setDesc(`${v}:00`);
@@ -14474,10 +14489,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "The latest hour the free-slot finder will suggest, so a gap late in the evening is not offered as availability.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(12, 22, 1)
 							.setValue(s.freeToHour)
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.freeToHour = v;
 								st.setDesc(`${v}:00`);
@@ -14550,10 +14564,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "How far back mail is pulled. This is also the ceiling on what Power Assistant's 'Ask your email' can search, because that window only ever indexes messages this plugin has already fetched. Raising it makes the next sync fetch more, once.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(7, 365, 1)
 							.setValue(Math.min(365, Math.max(7, s.mailHistoryDays || 45)))
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.mailHistoryDays = v;
 								st.setDesc(`Pull the last ${v} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`);
@@ -14568,10 +14581,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "How many of the newest messages survive each sync, per folder. This is the setting that actually bounds how much mail you can search: a wide day range changes nothing while this stays low, because older messages are dropped no matter how far back the window reaches. Higher costs memory and a longer first sync.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(50, 5000, 50)
 							.setValue(Math.min(5000, Math.max(50, s.mailMaxMessages || 50)))
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.mailMaxMessages = v;
 								st.setDesc(`Retain up to ${v} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`);
@@ -14623,10 +14635,9 @@ class PCSettingTab extends PluginSettingTab {
 				help: "How long a message stays selected before it counts as read. Long enough to arrow through a list without clearing everything, short enough that a message you actually stopped on is marked.",
 				build: (st) => {
 					st.addSlider((sl) =>
-						sl
+						showSliderValue(sl)
 							.setLimits(1, 30, 1)
 							.setValue(s.markReadSeconds)
-							.setDynamicTooltip()
 							.onChange((v) => {
 								s.markReadSeconds = v;
 								st.setDesc(`${v} second${v === 1 ? "" : "s"}`);
@@ -14639,7 +14650,7 @@ class PCSettingTab extends PluginSettingTab {
 		mail.push(
 			{
 				name: "Unread filter keeps items unread",
-				help: "While the Unread filter is on in the Mail view, selecting a message never marks it read; only the explicit read buttons do. Exactly Outlook's 'always keep items unread' behavior for unread filtering.",
+				help: "While the Unread filter is on in the mail view, selecting a message never marks it read; only the explicit read buttons do. Exactly Outlook's 'always keep items unread' behavior for unread filtering.",
 				build: (st) => {
 					st.addToggle((t) =>
 						t.setValue(s.unreadFilterKeepsUnread).onChange((v) => {

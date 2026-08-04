@@ -4365,6 +4365,11 @@ button.pcal-card-more .svg-icon {
 	border-top: none;
 }
 
+/* search narrows the settings tab by hiding whole sections and single rows */
+.pcal-hidden {
+	display: none;
+}
+
 .pcal-settings-search {
 	margin: 4px 0 10px;
 }
