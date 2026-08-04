@@ -8228,7 +8228,7 @@ class SignaturesModal extends Modal {
 		const side = top.createDiv("pcal-sig-side");
 		side.createEl("button", { text: "New" }).addEventListener("click", () => {
 			this.commit();
-			new PromptModal(this.app, "New signature", [{ label: "Name", value: "", placeholder: "iRely" }], ([name]) => {
+			new PromptModal(this.app, "New signature", [{ label: "Name", value: "", placeholder: "Work" }], ([name]) => {
 				if (!name.trim()) return;
 				const sig = { id: freshId(), name: name.trim(), html: "" };
 				this.plugin.settings.mailSignatures = [...this.plugin.settings.mailSignatures, sig];

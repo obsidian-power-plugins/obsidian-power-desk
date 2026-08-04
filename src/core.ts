@@ -1309,7 +1309,7 @@ export function ruleSummary(e: RuleEdit, folderName?: string): string {
 
 /** Words worth indexing, lowercased. Splits on everything that is not a
  *  letter, a digit, or the few marks that hold an address or a ticket number
- *  together, so "HDTN-510902" and "steve.palm@irely.com" survive as findable
+ *  together, so "ACME-510902" and "dana.lee@example.com" survive as findable
  *  units as well as breaking into their parts. */
 export function tokenize(text: string): string[] {
 	const out: string[] = [];
@@ -1318,7 +1318,7 @@ export function tokenize(text: string): string[] {
 		if (!t) continue;
 		out.push(t);
 		// an address or a hyphenated id is also findable by its pieces, so
-		// "palm" finds steve.palm@irely.com and "510902" finds the ticket
+		// "lee" finds dana.lee@example.com and "510902" finds the ticket
 		if (/[._@+-]/.test(t)) for (const p of t.split(/[._@+-]+/)) if (p && p !== t) out.push(p);
 	}
 	return out;
