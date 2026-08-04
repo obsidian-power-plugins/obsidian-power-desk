@@ -836,7 +836,7 @@ export async function listUnreadIdsInFolder(accessToken: string, folderId: strin
 	const ids: string[] = [];
 	for (let page = 0; url && page < 40; page++) {
 		const r: { status: number; json: unknown } = await requestUrl({ url, headers: { Authorization: `Bearer ${accessToken}` }, throw: false });
-		if (r.status >= 400) throw writeError(r as { status: number; json: unknown }, "read the folder");
+		if (r.status >= 400) throw writeError(r, "read the folder");
 		const j = bodyJson(r);
 		for (const v of (j?.value as { id?: string }[] | undefined) ?? []) if (v.id) ids.push(v.id);
 		if (ids.length >= cap) return { ids: ids.slice(0, cap), complete: false };
@@ -1070,7 +1070,7 @@ export async function findMessagesByCategory(accessToken: string, name: string, 
 	const hits: { id: string; categories: string[] }[] = [];
 	for (let page = 0; url && page < 40; page++) {
 		const r: { status: number; json: unknown } = await requestUrl({ url, headers: { Authorization: `Bearer ${accessToken}` }, throw: false });
-		if (r.status >= 400) throw writeError(r as { status: number; json: unknown }, "find the messages in that category");
+		if (r.status >= 400) throw writeError(r, "find the messages in that category");
 		const j = bodyJson(r);
 		for (const v of (j?.value as { id?: string; categories?: string[] }[] | undefined) ?? []) {
 			if (v.id) hits.push({ id: v.id, categories: v.categories ?? [] });

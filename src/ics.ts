@@ -20,7 +20,9 @@ const MAX_ITERATIONS = 10000;
  *  canceled or moved overrides are honored. Unparseable payloads throw so
  *  the source can surface the error; a single busted VEVENT is skipped. */
 export function parseIcsEvents(text: string, winStartMs: number, winEndMs: number, src: IcsSourceInfo): PCEvent[] {
-	const comp = new ICAL.Component(ICAL.parse(text));
+	// ICAL.parse is typed `any`; naming what it actually hands back (a jCal
+	// array) keeps everything built on it below checked.
+	const comp = new ICAL.Component(ICAL.parse(text) as unknown[]);
 
 	// Register the payload's own timezone definitions. Outlook feeds reference
 	// Windows zone names ("Tokyo Standard Time"); their VTIMEZONE blocks define

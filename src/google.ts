@@ -66,11 +66,17 @@ const b64url = (bytes: Uint8Array) => {
 /** Loopback sign-in: start a one-shot server on 127.0.0.1, send the user's
  *  browser to Google, catch the code, exchange it. Resolves with tokens or
  *  rejects with a readable error; always tears the server down. */
-export function loopbackAuth(clientId: string, clientSecret: string, openBrowser: (url: string) => void): Promise<GoogleTokens> {
-	if (!Platform.isDesktopApp) {
-		return Promise.reject(new GoogleError("Google sign-in needs the desktop app once; the connection then syncs to every device."));
+export async function loopbackAuth(clientId: string, clientSecret: string, openBrowser: (url: string) => void): Promise<GoogleTokens> {
+	// Imported here rather than at the top of the file, and only once a sign-in
+	// is actually under way: the module does not exist on mobile. A dynamic
+	// import also comes typed, which a require() call does not, so everything
+	// the server does below is checked. Both platform tests stand on purpose:
+	// isDesktopApp is the one that means Node is there, and isDesktop is the one
+	// the directory's linter reads as the guard.
+	const http = Platform.isDesktop && Platform.isDesktopApp ? await import("node:http") : null;
+	if (!http) {
+		throw new GoogleError("Google sign-in needs the desktop app once; the connection then syncs to every device.");
 	}
-	const http = require("node:http") as typeof import("node:http");
 	const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
 	return new Promise<GoogleTokens>((resolve, reject) => {
 		let redirect = "";

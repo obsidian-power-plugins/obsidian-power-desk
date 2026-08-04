@@ -196,8 +196,11 @@
 }
 
 /* and inside a run the separator goes as well, so the block is continuous. The
-   last row of the run keeps its line against whatever follows it. */
-.pcal-mail-row.is-multisel:has(+ .pcal-mail-row.is-multisel) {
+   last row of the run keeps its line against whatever follows it. The class is
+   set as the list renders, by the row that can see the one below it. A sibling
+   :has test said the same thing in one line, and re-tested it on every change
+   anywhere in the list. */
+.pcal-mail-row.is-multisel.is-multisel-run {
 	border-bottom-color: transparent;
 }
 
@@ -4559,21 +4562,18 @@ body.is-phone .pcal-mini-day {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 	grid-auto-flow: row dense;
-	column-gap: 26px;
+	gap: 0 26px;
 	align-items: start;
 }
+/* .pcal-wide is set as each row is drawn, on the ones whose control is a field
+   to fill in rather than a switch to flip. The selector used to ask the same
+   question with :has, once per kind of control, which makes every one of them a
+   standing query against the whole settings subtree. */
 .pcal-settings-section > .setting-item-heading,
 .pcal-settings-section > .pcal-section-intro,
 .pcal-settings-section > .pcal-account-head,
 .pcal-settings-section > .pcal-subsetting,
-.pcal-settings-section > .setting-item:has(input[type="text"]),
-.pcal-settings-section > .setting-item:has(input[type="password"]),
-.pcal-settings-section > .setting-item:has(input[type="search"]),
-.pcal-settings-section > .setting-item:has(input[type="number"]),
-.pcal-settings-section > .setting-item:has(textarea),
-.pcal-settings-section > .setting-item:has(.slider),
-.pcal-settings-section > .setting-item:has(select),
-.pcal-settings-section > .setting-item:has(input[type="range"]) {
+.pcal-settings-section > .setting-item.pcal-wide {
 	grid-column: 1 / -1;
 }
 

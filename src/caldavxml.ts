@@ -13,8 +13,8 @@ export function xmlEscape(s: string): string {
 export function xmlUnescape(s: string): string {
 	return s
 		.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-		.replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-		.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
+		.replace(/&#x([0-9a-fA-F]+);/g, (_: string, h: string) => String.fromCharCode(parseInt(h, 16)))
+		.replace(/&#(\d+);/g, (_: string, n: string) => String.fromCharCode(+n))
 		.replace(/&lt;/g, "<")
 		.replace(/&gt;/g, ">")
 		.replace(/&quot;/g, '"')

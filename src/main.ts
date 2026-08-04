@@ -711,6 +711,10 @@ interface TxnMailLike {
 	hasAttachments?: boolean;
 }
 
+/** The forecast, by day key. Named because an empty one has to be created in
+ *  two places, and `new Map()` on its own infers nothing. */
+type WeatherDays = Map<string, { hi: number; lo: number; code: number }>;
+
 export default class PowerDeskPlugin extends Plugin {
 	settings: PCSettings = DEFAULT_SETTINGS;
 	refreshSettingsTab: (() => void) | null = null;
@@ -736,7 +740,7 @@ export default class PowerDeskPlugin extends Plugin {
 	private autoTimer: number | null = null;
 
 	async onload() {
-		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, await this.loadData()));
+		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PCSettings> | null));
 		// baseline is the DISK state, cloned before any migration, so the
 		// migrated keys read as our change and actually persist
 		this.baseline = structuredClone(this.settings);
@@ -1049,7 +1053,11 @@ export default class PowerDeskPlugin extends Plugin {
 		// slab is what makes a reminder look like an error message. pw-self-styled
 		// is the family's marker for a notice that brings its own surface, so the
 		// light-theme restyling below leaves it alone.
-		notice.noticeEl.addClass("pcal-remind-notice", "pw-self-styled");
+		// The card is styled as `.notice.pcal-remind-notice`, so the classes go on
+		// the notice's own box rather than the message inside it. Walking up from
+		// messageEl finds that box on every build, and closest() counts the element
+		// itself, so it is right either way round.
+		notice.messageEl.closest(".notice")?.addClass("pcal-remind-notice", "pw-self-styled");
 	}
 
 	onunload() {
@@ -1313,7 +1321,7 @@ export default class PowerDeskPlugin extends Plugin {
 
 	/* ---------------- weather (Open-Meteo, keyless) ---------------- */
 
-	private weatherCache: { fetchedAt: number; days: Map<string, { hi: number; lo: number; code: number }> } | null = null;
+	private weatherCache: { fetchedAt: number; days: WeatherDays } | null = null;
 	private weatherInFlight = false;
 
 	/** The forecast for one day key, from a cache refreshed hourly. Null while
@@ -1357,7 +1365,7 @@ export default class PowerDeskPlugin extends Plugin {
 				url: `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=10&temperature_unit=${unit}`,
 			});
 			const d = r.json as { daily?: { time?: string[]; weather_code?: number[]; temperature_2m_max?: number[]; temperature_2m_min?: number[] } };
-			const days = new Map<string, { hi: number; lo: number; code: number }>();
+			const days: WeatherDays = new Map();
 			(d.daily?.time ?? []).forEach((t, i) => {
 				days.set(t, { hi: Math.round(d.daily?.temperature_2m_max?.[i] ?? 0), lo: Math.round(d.daily?.temperature_2m_min?.[i] ?? 0), code: d.daily?.weather_code?.[i] ?? 0 });
 			});
@@ -1365,7 +1373,7 @@ export default class PowerDeskPlugin extends Plugin {
 			this.notify();
 		} catch {
 			// a failed fetch keeps what it had and retries in an hour
-			this.weatherCache = { fetchedAt: Date.now(), days: this.weatherCache?.days ?? new Map() };
+			this.weatherCache = { fetchedAt: Date.now(), days: this.weatherCache?.days ?? new Map<string, { hi: number; lo: number; code: number }>() };
 		} finally {
 			this.weatherInFlight = false;
 		}
@@ -1473,7 +1481,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const folder = def.source.folder.trim() ? normalizePath(def.source.folder.trim()) : "";
 		for (const f of this.app.vault.getMarkdownFiles()) {
 			if (folder && f.path !== folder && !f.path.startsWith(folder + "/")) continue;
-			const fm = this.app.metadataCache.getFileCache(f)?.frontmatter as Record<string, unknown> | undefined;
+			const fm: Record<string, unknown> | undefined = this.app.metadataCache.getFileCache(f)?.frontmatter;
 			const raw = fm?.[def.source.dateProp];
 			if (raw == null) continue;
 			const span = vaultDateSpan(raw, def.source.endProp ? fm?.[def.source.endProp] : undefined);
@@ -2085,7 +2093,7 @@ export default class PowerDeskPlugin extends Plugin {
 			}
 			if (def.kind === "google") {
 				const raw = await getGoogleEvent(await this.googleTokenFor(def.account), def.calendarId, ev.seriesId);
-				return googleToPC(raw as GoogleEventLike, { sourceId: def.key, calendarName: def.label, color: def.color, writable: def.writable });
+				return googleToPC(raw, { sourceId: def.key, calendarName: def.label, color: def.color, writable: def.writable });
 			}
 			return null;
 		} catch (e) {
@@ -4592,7 +4600,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const heads = raw
 			.map((m) => {
 				const o = m as Record<string, unknown>;
-				const pc = graphMailToPC(o as GraphMailLike, a.id, this.nameOf(a), a.label);
+				const pc = graphMailToPC(o, a.id, this.nameOf(a), a.label);
 				if (!pc) return null;
 				return {
 					pc,
@@ -6449,6 +6457,7 @@ class MailView extends ItemView {
 			if (part.header) this.renderSectionHeader(part.header, collapsedSections.has(part.header.key));
 			for (const r of part.rows) this.renderRow(r, todayKey, nameMaps);
 		}
+		this.markSelectionRuns();
 		this.renderReading();
 	}
 
@@ -6755,6 +6764,22 @@ class MailView extends ItemView {
 				}
 				menu.showAtMouseEvent(e);
 			});
+		}
+	}
+
+	/** Which picked rows have another picked row directly beneath them, so a run
+	 *  of them can drop its inner separators and read as one block.
+	 *
+	 *  Every row is here already and every selection change redraws the list, so
+	 *  one pass at the end of a render answers a question the stylesheet used to
+	 *  ask with :has(+ …) and re-answer on every change anywhere in the list. The
+	 *  next SIBLING is the test, not the next row: a row that ends a section has
+	 *  a header under it, and its line stays. */
+	private markSelectionRuns() {
+		for (const row of Array.from(this.listEl.querySelectorAll<HTMLElement>(".pcal-mail-row"))) {
+			const next = row.nextElementSibling;
+			const run = !!next && next.hasClass("pcal-mail-row") && next.hasClass("is-multisel");
+			row.toggleClass("is-multisel-run", run);
 		}
 	}
 
@@ -7722,12 +7747,43 @@ class PrintModal extends Modal {
 	}
 }
 
+/** Put a node in at the caret, or at the end when the caret is somewhere else
+ *  entirely (the file picker that leads here can take focus away).
+ *
+ *  This is what execCommand("insertHTML") did, minus the string: that call took
+ *  markup as text, so an image whose filename held a quote wrote a broken tag
+ *  into the message. The command is also deprecated, and a range and a node say
+ *  the same thing in the API that replaced it. */
+function insertAtCaret(editor: HTMLElement, node: Node) {
+	editor.focus();
+	const sel = window.getSelection();
+	const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+	if (!sel || !range || !editor.contains(range.commonAncestorContainer)) {
+		editor.appendChild(node);
+		return;
+	}
+	range.deleteContents();
+	range.insertNode(node);
+	// leave the caret after what was just inserted, so typing carries on there
+	range.setStartAfter(node);
+	range.collapse(true);
+	sel.removeAllRanges();
+	sel.addRange(range);
+}
+
 /** The formatting bar shared by the compose window and the signature editor.
  *
  *  The buttons swallow mousedown so the editor keeps its selection: without
  *  that, clicking Bold moves focus to the button and there is nothing
  *  selected left to embolden. The editor is passed as a getter because the
- *  compose window builds its bar before its editor exists. */
+ *  compose window builds its bar before its editor exists.
+ *
+ *  Bold and its neighbours are still execCommand: it is deprecated, and every
+ *  browser still implements it, because nothing has replaced it. Doing this
+ *  properly means a rich-text engine of our own (toggling a run that is half
+ *  bold already, splitting a list item at the caret, undo that matches the
+ *  editor's), which is a large thing to get wrong in a box people write mail
+ *  in. The two calls that could leave, image insertion, have. */
 function richToolbar(app: App, bar: HTMLElement, editor: () => HTMLElement, extra?: { label: string; icon: string; run: () => void }[]) {
 	const tb = (icon: string, label: string, run: () => void) => {
 		const b = bar.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
@@ -8230,8 +8286,7 @@ class SignaturesModal extends Modal {
 										return;
 									}
 									const url = `data:${mime};base64,${arrayBufferToBase64(bytes)}`;
-									this.editorEl.focus();
-									document.execCommand("insertHTML", false, `<img src="${url}" alt="${f.basename}">`);
+									insertAtCaret(this.editorEl, createEl("img", { attr: { src: url, alt: f.basename } }));
 								} catch (err) {
 									new Notice("Power Desk: could not read that image. " + (err instanceof Error ? err.message : String(err)));
 								}
@@ -10346,7 +10401,7 @@ class PowerCalendarView extends ItemView {
 		key("ArrowRight", () => this.step(1));
 		key("F", () => this.toggleFullscreen());
 		key("S", () => this.toggleSidebar());
-		(this.scope as Scope).register([], "Escape", () => {
+		this.scope.register([], "Escape", () => {
 			if (this.fullscreen && !this.cardEl && !this.miniEl) {
 				this.toggleFullscreen();
 				return false;
@@ -12449,8 +12504,8 @@ class RichComposeModal extends Modal {
 								new Notice("Power Desk: pick an image file.");
 								return;
 							}
-							this.editorEl.focus();
-							document.execCommand("insertHTML", false, `<img src="data:${mime};base64,${arrayBufferToBase64(bytes)}" alt="${f.basename}">`);
+							const src = `data:${mime};base64,${arrayBufferToBase64(bytes)}`;
+							insertAtCaret(this.editorEl, createEl("img", { attr: { src, alt: f.basename } }));
 						})();
 					}).open(),
 			},
@@ -13425,6 +13480,11 @@ type Group = { heading?: string; rows: Row[] };
  *  the fallback renderer for older builds. */
 type Page = { id: string; label: string; groups: Group[] };
 
+/** The controls that earn a row the full width of the two-column settings
+ *  layout: anything you type into, drag, or pick from wants the room, while a
+ *  toggle or a button is happy beside its neighbour. */
+const WIDE_CONTROLS = 'input[type="text"], input[type="password"], input[type="search"], input[type="number"], input[type="range"], textarea, select, .slider';
+
 class PCSettingTab extends PluginSettingTab {
 	private activeTab = "microsoft";
 	private query = "";
@@ -13678,7 +13738,7 @@ class PCSettingTab extends PluginSettingTab {
 			const q = this.query.trim().toLowerCase();
 			setVisible(tabBar, !q);
 			for (const sec of Array.from(body.children) as HTMLElement[]) {
-				const items = Array.from(sec.querySelectorAll(":scope > .setting-item:not(.setting-item-heading)")) as HTMLElement[];
+				const items = Array.from(sec.querySelectorAll<HTMLElement>(":scope > .setting-item:not(.setting-item-heading)"));
 				if (!q) {
 					for (const it of items) setVisible(it, true);
 					setVisible(sec, sec.dataset.tab === this.activeTab);
@@ -13727,6 +13787,11 @@ class PCSettingTab extends PluginSettingTab {
 		if (r.aliases?.length) st.settingEl.dataset.pcalAlias = r.aliases.join(" ").toLowerCase();
 		r.build?.(st);
 		if (r.help) this.addHelp(st, r.help);
+		// A row with something to type in, drag, or choose from takes the full
+		// width of the two-column layout; a row with a switch or a button sits in
+		// one column. The control is built by then, so the row can be asked once
+		// here instead of the stylesheet asking it forever with :has().
+		if (st.settingEl.querySelector(WIDE_CONTROLS)) st.settingEl.addClass("pcal-wide");
 	}
 
 	/** A row that owns a container instead of a control: the source lists draw
