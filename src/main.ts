@@ -826,9 +826,7 @@ export default class PowerDeskPlugin extends Plugin {
 			name: "Focus mode (full width mail and calendar)",
 			callback: () => {
 				// entering from a note would focus on nothing, so bring mail up
-				const v = this.app.workspace.getActiveViewOfType(ItemView);
-				const onPower = v instanceof MailView || v instanceof PowerCalendarView;
-				if (!this.focusOn() && !onPower) void this.openMailView().then(() => this.toggleFocus(true));
+				if (!this.focusOn() && !this.onPowerView()) void this.openMailView().then(() => this.toggleFocus(true));
 				else this.toggleFocus();
 			},
 		});
@@ -902,11 +900,13 @@ export default class PowerDeskPlugin extends Plugin {
 			this.app.workspace.on("active-leaf-change", (leaf) => {
 				const v = leaf?.view;
 				if (v instanceof MailView) this.pollMailNow();
-				// Deliberately nothing about the layout here. Mail and the
-				// calendar open into exactly the workspace you already had;
-				// the panel button is the only thing that changes it, because
-				// a window that rearranges itself as you move between tabs is
-				// unsettling however sensible each rearrangement is.
+				// The full-width fold follows the tab it belongs to. Opening
+				// mail or the calendar still rearranges nothing on its own —
+				// that is still the panel button's job alone — but once that
+				// button has been pressed, the fold is part of what those two
+				// tabs look like, and stepping onto a note hands the pages
+				// back rather than leaving them shut behind it.
+				this.applyFocus();
 			})
 		);
 		// anything on the ribbon opens something in the page tree, so bring
@@ -915,9 +915,11 @@ export default class PowerDeskPlugin extends Plugin {
 			document,
 			"click",
 			(e) => {
-				if (!this.pagesHidden) return;
+				if (!this.pagesFolded) return;
 				const t = e.target as HTMLElement | null;
-				if (t?.closest?.(".workspace-ribbon")) this.toggleFocus(false);
+				// the tree comes back for the click, but the fold stays armed:
+				// coming back to mail should not need the button pressed again
+				if (t?.closest?.(".workspace-ribbon")) this.unfoldNow();
 			},
 			true
 		);
@@ -3555,9 +3557,23 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  window can never feel like a mode you cannot leave. Clicking anything
 	 *  on it brings the tree straight back, which is what it is for. */
 	private pagesHidden = false;
+	/** Whether the tree is folded away right now, which is not the same
+	 *  question. The fold belongs to the mail and calendar tabs: step off one
+	 *  and the tree comes back, step onto one and it folds again. Without the
+	 *  distinction, turning it on and then opening a note left the pages
+	 *  collapsed behind a note that had every use for them and no button to
+	 *  bring them back — a mode you could not leave, which is exactly what the
+	 *  ribbon escape hatch existed to avoid and did not really solve. */
+	private pagesFolded = false;
 
 	focusOn(): boolean {
 		return this.pagesHidden;
+	}
+
+	/** Whether the tab in front is one the fold is for. */
+	private onPowerView(): boolean {
+		const v = this.app.workspace.getActiveViewOfType(ItemView);
+		return v instanceof MailView || v instanceof PowerCalendarView;
 	}
 
 	/** Fold the whole left side away, and put it back.
@@ -3579,16 +3595,39 @@ export default class PowerDeskPlugin extends Plugin {
 	}
 
 	toggleFocus(on?: boolean) {
-		const want = on ?? !this.pagesHidden;
-		const left = this.app.workspace.leftSplit;
-		if (!left) return;
-		if (want) left.collapse();
-		else left.expand();
-		this.pagesHidden = want;
+		this.pagesHidden = on ?? !this.pagesHidden;
+		this.applyFocus();
 		for (const fn of this.focusWatchers) fn();
 		// deliberately no notify(): nothing drawn depends on this, and a
 		// repaint of every row is what made the toggle feel like it hung.
 		// The button that was clicked updates its own state.
+	}
+
+	/** Put the tree where the current tab wants it: away while the fold is on
+	 *  and mail or the calendar is in front, back for anything else.
+	 *
+	 *  Only ever moves it when the answer has actually changed, so opening a
+	 *  note with the fold off never touches a sidebar the user arranged, and
+	 *  the leaf changes that arrive several at a time cost one call each. */
+	applyFocus() {
+		const want = this.pagesHidden && this.onPowerView();
+		if (want === this.pagesFolded) return;
+		const left = this.app.workspace.leftSplit;
+		if (!left) return;
+		if (want) left.collapse();
+		else left.expand();
+		this.pagesFolded = want;
+	}
+
+	/** Hand the tree back this instant, without disarming the fold.
+	 *
+	 *  The ribbon click that calls this is on its way to opening something in
+	 *  the tree and must not fire into a pane that is still shut, and it runs
+	 *  before the leaf change that would otherwise sort this out. */
+	private unfoldNow() {
+		if (!this.pagesFolded) return;
+		this.app.workspace.leftSplit?.expand();
+		this.pagesFolded = false;
 	}
 
 	/* ----- automatic replies ----- */
@@ -5639,7 +5678,7 @@ class MailView extends ItemView {
 		// "files" rather than a panel glyph: this toggles the vault's notes,
 		// not a panel belonging to this view, and the calendar has a real
 		// panel toggle of its own that should keep the panel icon
-		this.foldToggleBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Show or hide the vault's notes" } });
+		this.foldToggleBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
 		setIcon(this.foldToggleBtn, "panel-left");
 		this.foldToggleBtn.toggleClass("is-active", this.plugin.focusOn());
 		this.foldToggleBtn.addEventListener("click", () => {
@@ -10651,7 +10690,7 @@ class PowerCalendarView extends ItemView {
 		// first in the row and the same glyph as the mail view's, because it is
 		// the same button doing the same thing to the same sidebar: a control
 		// that moves depending on which tab you are on is a different control
-		this.foldToggleBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Show or hide the vault's notes" } });
+		this.foldToggleBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
 		setIcon(this.foldToggleBtn, "panel-left");
 		this.foldToggleBtn.toggleClass("is-active", this.plugin.focusOn());
 		this.foldToggleBtn.addEventListener("click", () => {
