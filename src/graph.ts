@@ -276,6 +276,23 @@ export async function fetchUnreadMessages(accessToken: string, maxPages = 2): Pr
 	return pagedGet(url, accessToken, {}, maxPages);
 }
 
+/** The unread in ONE folder, newest first.
+ *
+ *  Unread Mail is built a folder at a time from these, because there is no
+ *  way to ask Graph for "the messages under this folder and its children":
+ *  the messages endpoint takes one folder, and $filter has no operator that
+ *  would take a list of them. Asking the mailbox instead and discarding what
+ *  falls outside the inbox is what this replaced, and it could not work on a
+ *  mailbox whose unread is mostly somewhere else. */
+export async function fetchUnreadInFolder(accessToken: string, folderId: string, want = 50): Promise<unknown[]> {
+	const filter = encodeURIComponent("receivedDateTime ge 1900-01-01T00:00:00Z and isRead eq false");
+	const url =
+		`https://graph.microsoft.com/v1.0/me/mailFolders/${encodeURIComponent(folderId)}/messages` +
+		`?$filter=${filter}&$orderby=${encodeURIComponent("receivedDateTime desc")}&$top=50&$select=${MAIL_SELECT}`;
+	const pages = Math.min(20, Math.max(1, Math.ceil(want / 50)));
+	return pagedGet(url, accessToken, {}, pages);
+}
+
 const FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount,unreadItemCount,totalItemCount";
 
 /** The inbox's folder id, so tree ordering never depends on a display name

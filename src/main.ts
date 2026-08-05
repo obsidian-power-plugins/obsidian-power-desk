@@ -182,6 +182,7 @@ import {
 	fetchMailFolders,
 	getMessagesBatch,
 	fetchUnreadMessages,
+	fetchUnreadInFolder,
 	getEvent,
 	getInboxId,
 	getMailAttachmentBytes,
@@ -2502,8 +2503,7 @@ export default class PowerDeskPlugin extends Plugin {
 				a.id,
 				async () => {
 					if (folderId === UNREAD_FOLDER) {
-						const raw = await fetchUnreadMessages(await this.graphTokenFor(a));
-						const fresh = raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
+						const fresh = await this.unreadAcrossInbox(a);
 						// This folder is a question the mailbox answers afresh every
 						// time, so a message you have just read is simply not in the
 						// answer. Replacing the list wholesale would delete that row
@@ -2537,6 +2537,41 @@ export default class PowerDeskPlugin extends Plugin {
 			if (!quiet) this.notify();
 			this.queueCachePersist();
 		}
+	}
+
+	/** Every unread message in the inbox and everything under it.
+	 *
+	 *  A folder at a time, and only the folders the tree says are holding
+	 *  something. The mailbox-wide alternative this replaced asked for the
+	 *  newest hundred unread ANYWHERE and then threw away whatever fell
+	 *  outside the inbox, which is fine until the mailbox has thousands of
+	 *  unread somewhere else: one real mailbox spent 81 of that hundred on
+	 *  sync-conflict copies and another on junk, and showed 18 of its 33.
+	 *  Worse, the ones it dropped were the OLDEST, so a quiet folder's unread
+	 *  was invisible however long it sat there.
+	 *
+	 *  Reading the same counts the folder pane reads is the point: the list
+	 *  and the number beside it now come from one answer, so they cannot
+	 *  disagree. It costs one request per folder that has unread in it, which
+	 *  is a handful, and none at all for a mailbox that is caught up. */
+	private async unreadAcrossInbox(a: GraphAccount): Promise<PCMail[]> {
+		const token = await this.graphTokenFor(a);
+		const toPC = (raw: unknown[]) => raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
+		const st = this.mailFolderCache.get(a.id);
+		// before the tree has landed there is nothing to walk, so the old
+		// mailbox-wide sweep stands in for one round
+		if (!st || !st.inboxId || !st.folders.length) return toPC(await fetchUnreadMessages(token));
+		const subtree = folderSubtreeIds(st.folders, st.inboxId);
+		const picks = st.folders.filter((f) => subtree.has(f.id) && f.unread > 0);
+		const cap = Math.min(5000, Math.max(50, this.settings.mailMaxMessages || 500));
+		const out: PCMail[] = [];
+		// already inside the mailbox gate, so these go one after another
+		// rather than taking slots a click is waiting for
+		for (const f of picks) {
+			if (out.length >= cap) break;
+			out.push(...toPC(await fetchUnreadInFolder(token, f.id, Math.min(cap, f.unread + 10))));
+		}
+		return out.sort((x, y) => y.receivedMs - x.receivedMs).slice(0, cap);
 	}
 
 	/* ----- prefetch: the Outlook cached-mode feel ----- */
