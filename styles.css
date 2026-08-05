@@ -3532,7 +3532,7 @@ button.pcal-card-more .svg-icon {
 	padding-left: 8px;
 	font-size: var(--font-ui-smaller);
 	font-weight: var(--font-normal);
-	color: var(--text-faint);
+	color: var(--pcal-row-dim);
 	white-space: nowrap;
 }
 
@@ -3565,7 +3565,7 @@ button.pcal-card-more .svg-icon {
 	display: flex;
 	align-items: center;
 	flex-shrink: 0;
-	color: var(--text-faint);
+	color: var(--pcal-row-dim);
 }
 
 .pcal-mail-section-twist .svg-icon {
@@ -3586,7 +3586,7 @@ button.pcal-card-more .svg-icon {
 	font-weight: var(--font-normal);
 	letter-spacing: 0;
 	text-transform: none;
-	color: var(--text-faint);
+	color: var(--pcal-row-dim);
 }
 
 /* the conversation twisty: a fixed column ahead of the avatar so every row
@@ -3598,7 +3598,7 @@ button.pcal-card-more .svg-icon {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	color: var(--text-faint);
+	color: var(--pcal-row-dim);
 	cursor: pointer;
 }
 
@@ -3792,6 +3792,14 @@ button.pcal-card-more .svg-icon {
 	   whatever background the theme puts behind the list. */
 	--pcal-row-hover: rgb(230, 242, 250);
 	--pcal-row-selected: rgb(205, 230, 247);
+	/* The list's second voice: the time, the preview, the quick actions, the
+	   marks and the twisties. The theme's own --text-faint was doing this job
+	   and clears only about 2 to 3 to 1 against the two blues above, which is
+	   what reads as washed out rather than quiet. This is 6.1:1 on the
+	   selected row and 7.8:1 on a plain one: legible at a glance, and still
+	   plainly second to the sender in --text-normal and the subject in blue,
+	   which sit at better than 12:1. */
+	--pcal-row-dim: #525252;
 }
 
 .theme-dark .pcal-mail-root {
@@ -3803,6 +3811,8 @@ button.pcal-card-more .svg-icon {
 	--background-modifier-active-hover: rgba(108, 184, 246, 0.16);
 	--pcal-row-hover: rgba(108, 184, 246, 0.16);
 	--pcal-row-selected: rgba(108, 184, 246, 0.28);
+	/* the same standing against a dark base: 6.7:1, where normal text is 12 */
+	--pcal-row-dim: #9aa5b1;
 }
 
 /* the subject carries that blue on every row, read or unread, which is how
@@ -3831,7 +3841,7 @@ button.pcal-card-more .svg-icon {
 .pcal-mail-clip .svg-icon {
 	width: 11px;
 	height: 11px;
-	color: var(--text-faint);
+	color: var(--pcal-row-dim);
 	vertical-align: -1px;
 }
 
@@ -3839,7 +3849,7 @@ button.pcal-card-more .svg-icon {
    for; one line keeps the old single-line ellipsis exactly as it was */
 .pcal-mail-preview {
 	font-size: var(--font-ui-smaller);
-	color: var(--text-faint);
+	color: var(--pcal-row-dim);
 	line-height: 1.35;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -3905,7 +3915,7 @@ button.pcal-card-more .svg-icon {
 	box-shadow: none;
 	padding: 3px 4px;
 	height: auto;
-	color: var(--text-faint);
+	color: var(--pcal-row-dim);
 	cursor: default;
 }
 
