@@ -1,4 +1,4 @@
-import { App, ButtonComponent, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, SliderComponent, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
+import { App, ButtonComponent, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, SliderComponent, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, htmlToMarkdown, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
 import { chunk, GRAPH_BATCH_MAX,
 	DayCell,
 	EventDraft,
@@ -38,6 +38,11 @@ import { chunk, GRAPH_BATCH_MAX,
 	orderFolderTree,
 	PCMail,
 	stripHtml,
+	mailBodyMarkdown,
+	mailInlineImages,
+	imageExtension,
+	normalizeCid,
+	parseDataUrl,
 	subjectToEventTitle,
 	googleEventBody,
 	googleTimesBody,
@@ -270,6 +275,10 @@ const VIEW_TYPE = "power-calendar";
 const VIEW_TYPE_MAIL = "power-calendar-mail";
 /** The Unread search folder's virtual id in folder selections and caches. */
 const UNREAD_FOLDER = "__unread__";
+/** How many inline pictures one saved message may bring into the vault. A
+ *  newsletter can carry dozens of them; a note wants the ones that are the
+ *  message, not every badge in its footer. */
+const MAX_NOTE_IMAGES = 20;
 
 /* ---------------- settings ---------------- */
 
@@ -433,6 +442,9 @@ interface PCSettings {
 	 *  notes folder, so existing setups are unchanged; point it at a protected
 	 *  folder to keep saved mail encrypted on Dropbox. */
 	mailNotesFolder: string;
+	/** Whether a saved email brings its inline pictures into the vault. Off,
+	 *  the note keeps the words and the pictures are left in the mailbox. */
+	mailNoteImages: boolean;
 	noteNameTemplate: string;
 	notesInNewTab: boolean;
 	/** The Mail view's unread filter (Outlook's Unread search folder). */
@@ -605,6 +617,7 @@ const DEFAULT_SETTINGS: PCSettings = {
 	agendaDays: 30,
 	notesFolder: "Calendar",
 	mailNotesFolder: "",
+	mailNoteImages: true,
 	noteNameTemplate: "{{date}} {{title}}",
 	notesInNewTab: false,
 	mailUnreadOnly: false,
@@ -4642,14 +4655,16 @@ export default class PowerDeskPlugin extends Plugin {
 		return null;
 	}
 
-	/** A message into the vault: dated note, readable text, source link. */
+	/** A message into the vault: dated note, the message as Markdown with its
+	 *  pictures, source link. */
 	async saveMailToNote(m: PCMail): Promise<void> {
 		const body = await this.readMailBody(m);
 		// mail has its own folder so it can be filed apart from event notes (and
 		// into a protected folder); empty falls back to the calendar folder
 		const folder = normalizePath(this.settings.mailNotesFolder.trim() || this.settings.notesFolder.trim() || "Calendar");
 		await this.ensureFolder(folder);
-		const path = normalizePath(`${folder}/${sanitizeName(`${keyOfMs(m.receivedMs)} ${m.subject}`)}.md`);
+		const base = sanitizeName(`${keyOfMs(m.receivedMs)} ${m.subject}`);
+		const path = normalizePath(`${folder}/${base}.md`);
 		const existing = this.app.vault.getAbstractFileByPath(path);
 		if (existing instanceof TFile) {
 			await this.showNote(existing);
@@ -4665,12 +4680,90 @@ export default class PowerDeskPlugin extends Plugin {
 			"",
 			`# ${m.subject}`,
 			"",
-			body?.text ?? m.preview,
+			await this.mailNoteBody(m, body, folder, base, path),
 			"",
 		];
 		const f = await this.app.vault.create(path, lines.join("\n"));
 		await this.showNote(f);
 		new Notice("Power Desk: mail saved to a note.");
+	}
+
+	/** A saved message's body. HTML mail becomes Markdown, so the headings,
+	 *  lists, links and pictures that are the message survive the trip into the
+	 *  vault; the stripped text stays the fallback for plain-text mail and for
+	 *  anything the conversion makes nothing of. */
+	private async mailNoteBody(m: PCMail, body: { text: string; html?: string } | null, folder: string, base: string, notePath: string): Promise<string> {
+		const html = body?.html?.trim() ?? "";
+		const fallback = body?.text?.trim() || m.preview;
+		if (!html) return fallback;
+		const embeds = this.settings.mailNoteImages ? await this.saveInlineImages(m, html, folder, base, notePath) : new Map<string, string>();
+		return mailBodyMarkdown(html, htmlToMarkdown, embeds) || fallback;
+	}
+
+	/** A message's inline pictures written beside the note, and the embed for
+	 *  each, keyed the way the Markdown pass looks them up.
+	 *
+	 *  They go into an attachments folder under the saved-mail folder rather
+	 *  than the vault's own attachment folder so that a saved-mail folder under
+	 *  Power Connect protection keeps the pictures encrypted too, and so a mail
+	 *  note and its pictures move together.
+	 *
+	 *  Data URLs carry their own bytes. A cid: reference has to be fetched, and
+	 *  Graph only reports contentId with the payload, so the inline attachments
+	 *  are read and matched afterwards, the same walk the reading pane makes;
+	 *  a sender who marked its pictures as ordinary attachments is picked up on
+	 *  a second pass, which only runs when something is still missing. */
+	private async saveInlineImages(m: PCMail, html: string, folder: string, base: string, notePath: string): Promise<Map<string, string>> {
+		const all = mailInlineImages(html);
+		const refs = all.slice(0, MAX_NOTE_IMAGES);
+		if (!refs.length) return new Map();
+		// a cap that says nothing reads as "that was all of them"
+		if (all.length > refs.length) new Notice(`Power Desk: keeping the first ${refs.length} pictures of ${all.length}.`);
+		const bytes = new Map<string, { base64: string; ext: string }>();
+		for (const r of refs) {
+			const parsed = r.dataUrl ? parseDataUrl(r.dataUrl) : null;
+			if (parsed) bytes.set(r.key, parsed);
+		}
+		const missing = () => refs.filter((r) => r.cid && !bytes.has(r.key));
+		if (missing().length) {
+			const atts = await this.mailAttachments(m);
+			const take = async (list: MailAttachment[]) => {
+				for (const raw of await Promise.all(list.slice(0, MAX_NOTE_IMAGES).map((a) => this.mailAttachmentRaw(m, a.id, true)))) {
+					if (!raw?.contentId) continue;
+					const key = normalizeCid(raw.contentId);
+					if (refs.some((r) => r.key === key)) bytes.set(key, { base64: raw.contentBytes, ext: imageExtension(raw.name, raw.contentType) });
+				}
+			};
+			await take(atts.filter((a) => a.isInline));
+			if (missing().length) await take(atts.filter((a) => !a.isInline && /^image\//i.test(a.contentType)));
+		}
+		if (!bytes.size) return new Map();
+		const dir = normalizePath(`${folder}/attachments`);
+		await this.ensureFolder(dir);
+		const out = new Map<string, string>();
+		let n = 0;
+		for (const r of refs) {
+			const hit = bytes.get(r.key);
+			if (!hit) continue;
+			try {
+				const f = await this.app.vault.createBinary(this.freeAttachmentPath(dir, `${base} ${++n}`, hit.ext), base64ToArrayBuffer(hit.base64));
+				// generateMarkdownLink writes whatever this vault's link style is;
+				// the "!" is what makes it an embed rather than a link to a file
+				out.set(r.key, `!${this.app.fileManager.generateMarkdownLink(f, notePath)}`);
+			} catch {
+				// one picture that will not write is not worth losing the note over
+			}
+		}
+		return out;
+	}
+
+	/** A path in `dir` nothing occupies yet. */
+	private freeAttachmentPath(dir: string, base: string, ext: string): string {
+		for (let n = 0; n < 100; n++) {
+			const p = normalizePath(`${dir}/${base}${n ? ` (${n})` : ""}.${ext}`);
+			if (!this.app.vault.getAbstractFileByPath(p)) return p;
+		}
+		return normalizePath(`${dir}/${base} ${Date.now()}.${ext}`);
 	}
 
 	async openMailView(): Promise<void> {
@@ -15214,6 +15307,20 @@ class PCSettingTab extends PluginSettingTab {
 					st.addText((t) =>
 						t.setPlaceholder(s.notesFolder.trim() || "Calendar").setValue(s.mailNotesFolder).onChange((v) => {
 							s.mailNotesFolder = v.trim();
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Keep the pictures",
+				cls: "pcal-subsetting",
+				desc: "Bring a saved email's inline images into the vault, into an attachments folder beside the note.",
+				help: "A saved message is converted to Markdown, so its headings, lists and links come with it. Its pictures cannot: they live in the mailbox as attachments the message points at, and a note that points at those shows nothing. On, each one is written into an attachments folder under the saved-mail folder and embedded in the note, which keeps it inside a Power Connect protected folder rather than in the vault's general attachment folder, and keeps the note and its pictures together when either moves. Tracking pixels are never saved, and images the sender hosts elsewhere stay links, exactly as the message has them. Off, the note keeps the words and nothing is written but the note.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.mailNoteImages).onChange((v) => {
+							s.mailNoteImages = v;
 							save();
 						})
 					);
