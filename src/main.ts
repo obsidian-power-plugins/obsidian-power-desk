@@ -40,7 +40,9 @@ import { chunk, GRAPH_BATCH_MAX,
 	stripHtml,
 	mailBodyMarkdown,
 	mailInlineImages,
+	MailEmbed,
 	imageExtension,
+	imageSize,
 	normalizeCid,
 	parseDataUrl,
 	subjectToEventTitle,
@@ -4696,7 +4698,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const html = body?.html?.trim() ?? "";
 		const fallback = body?.text?.trim() || m.preview;
 		if (!html) return fallback;
-		const embeds = this.settings.mailNoteImages ? await this.saveInlineImages(m, html, folder, base, notePath) : new Map<string, string>();
+		const embeds = this.settings.mailNoteImages ? await this.saveInlineImages(m, html, folder, base, notePath) : new Map<string, MailEmbed>();
 		return mailBodyMarkdown(html, htmlToMarkdown, embeds) || fallback;
 	}
 
@@ -4713,7 +4715,7 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  are read and matched afterwards, the same walk the reading pane makes;
 	 *  a sender who marked its pictures as ordinary attachments is picked up on
 	 *  a second pass, which only runs when something is still missing. */
-	private async saveInlineImages(m: PCMail, html: string, folder: string, base: string, notePath: string): Promise<Map<string, string>> {
+	private async saveInlineImages(m: PCMail, html: string, folder: string, base: string, notePath: string): Promise<Map<string, MailEmbed>> {
 		const all = mailInlineImages(html);
 		const refs = all.slice(0, MAX_NOTE_IMAGES);
 		if (!refs.length) return new Map();
@@ -4740,16 +4742,17 @@ export default class PowerDeskPlugin extends Plugin {
 		if (!bytes.size) return new Map();
 		const dir = normalizePath(`${folder}/attachments`);
 		await this.ensureFolder(dir);
-		const out = new Map<string, string>();
+		const out = new Map<string, MailEmbed>();
 		let n = 0;
 		for (const r of refs) {
 			const hit = bytes.get(r.key);
 			if (!hit) continue;
 			try {
-				const f = await this.app.vault.createBinary(this.freeAttachmentPath(dir, `${base} ${++n}`, hit.ext), base64ToArrayBuffer(hit.base64));
+				const data = base64ToArrayBuffer(hit.base64);
+				const f = await this.app.vault.createBinary(this.freeAttachmentPath(dir, `${base} ${++n}`, hit.ext), data);
 				// generateMarkdownLink writes whatever this vault's link style is;
 				// the "!" is what makes it an embed rather than a link to a file
-				out.set(r.key, `!${this.app.fileManager.generateMarkdownLink(f, notePath)}`);
+				out.set(r.key, { link: `!${this.app.fileManager.generateMarkdownLink(f, notePath)}`, naturalWidth: imageSize(new Uint8Array(data))?.w });
 			} catch {
 				// one picture that will not write is not worth losing the note over
 			}
