@@ -2120,15 +2120,73 @@ const attrOf = (tag: string, name: string): string =>
 		?.slice(1)
 		.find((v) => v !== undefined) ?? "";
 
-/** A tag's width or height in pixels, from the attribute or the style, or
- *  null when it is given in anything but pixels (a percentage sizes to the
- *  message, and says nothing about how big the picture is). */
+/** CSS lengths in pixels each, at the 96dpi every mail client renders at.
+ *  Word writes an inserted picture's size in inches, so this is what turns
+ *  Outlook's own "width:6.5in" into the 624 the message shows. */
+const CSS_UNIT_PX: Record<string, number> = { px: 1, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, pt: 96 / 72, pc: 16 };
+
+/** A tag's width or height in pixels, from the style or the attribute, or
+ *  null when it says nothing definite (a percentage sizes to the message,
+ *  and says nothing about how big the picture is). */
 function pixelSize(tag: string, name: "width" | "height"): number | null {
-	const styled = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([\\d.]+)\\s*px`, "i").exec(attrOf(tag, "style"))?.[1];
-	const attr = attrOf(tag, name).trim();
-	const raw = styled ?? (/^[\d.]+(?:px)?$/i.test(attr) ? attr : "");
-	const n = parseFloat(raw);
-	return Number.isFinite(n) ? n : null;
+	const styled = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([\\d.]+)\\s*(px|in|cm|mm|pt|pc)`, "i").exec(attrOf(tag, "style"));
+	const attr = /^([\d.]+)(px)?$/i.exec(attrOf(tag, name).trim());
+	const [raw, unit] = styled ? [styled[1], styled[2].toLowerCase()] : attr ? [attr[1], "px"] : ["", ""];
+	const n = parseFloat(raw) * (CSS_UNIT_PX[unit] ?? 0);
+	return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** The width in pixels a message asks a picture to be shown at, rounded to
+ *  what an embed can carry. Null when the message leaves it to the reader. */
+export function declaredWidth(tag: string): number | null {
+	const w = pixelSize(tag, "width");
+	return w === null ? null : Math.max(1, Math.round(w));
+}
+
+/** An embed with a pixel width written into it, in whichever link syntax the
+ *  vault uses: ![[file|600]] or ![alt|600](file). */
+export function withEmbedWidth(embed: string, width: number | null): string {
+	if (!width) return embed;
+	const wiki = /^!\[\[([^\]]+)\]\]$/.exec(embed.trim());
+	if (wiki) return `![[${wiki[1]}|${width}]]`;
+	const md = /^!\[([^\]]*)\]\(([\s\S]*)\)$/.exec(embed.trim());
+	if (md) return `![${md[1] ? `${md[1]}|` : ""}${width}](${md[2]})`;
+	return embed;
+}
+
+/** A picture's own size, read from the front of the file: PNG, GIF, BMP and
+ *  JPEG, which covers what a message embeds. Null for anything else, and for
+ *  SVG, which carries no pixel size at all. */
+export function imageSize(bytes: Uint8Array): { w: number; h: number } | null {
+	if (bytes.length < 24) return null;
+	const be16 = (i: number) => (bytes[i] << 8) | bytes[i + 1];
+	const be32 = (i: number) => ((bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3]) >>> 0;
+	const le16 = (i: number) => bytes[i] | (bytes[i + 1] << 8);
+	const le32 = (i: number) => (bytes[i] | (bytes[i + 1] << 8) | (bytes[i + 2] << 16) | (bytes[i + 3] << 24)) >>> 0;
+	if (be32(0) === 0x89504e47) return { w: be32(16), h: be32(20) }; // PNG: the IHDR chunk sits at a fixed offset
+	if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return { w: le16(6), h: le16(8) }; // GIF
+	if (bytes[0] === 0x42 && bytes[1] === 0x4d) return { w: le32(18), h: le32(22) }; // BMP
+	if (be16(0) !== 0xffd8) return null;
+	// JPEG keeps its size in the frame header, which is only reachable by
+	// walking the segments: they vary in length and any number of them can
+	// come first
+	for (let i = 2; i + 9 < bytes.length; ) {
+		if (bytes[i] !== 0xff) {
+			i++;
+			continue;
+		}
+		const marker = bytes[i + 1];
+		// standalone markers carry no length to skip by
+		if (marker === 0x01 || marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+			i += 2;
+			continue;
+		}
+		if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { w: be16(i + 7), h: be16(i + 5) };
+		const len = be16(i + 2);
+		if (len < 2) return null;
+		i += 2 + len;
+	}
+	return null;
 }
 
 /** True for the invisible pixel a newsletter loads to report that a message
@@ -2172,6 +2230,16 @@ export function mailInlineImages(html: string): MailInlineImage[] {
  *  digits only, because anything with punctuation in it comes back escaped. */
 const imgToken = (n: number) => `PDMAILIMAGE${n}ENDIMAGE`;
 
+/** A saved picture, ready to embed: the link the vault's own link style
+ *  wrote, and the size of the file itself, which decides how wide the embed
+ *  is written when the message never said. */
+export type MailEmbed = { link: string; naturalWidth?: number };
+
+/** How wide a picture the message did not size is written at. A little under
+ *  the readable column, so a photo lands as a picture in a note rather than
+ *  as a wall the text below it starts under. */
+const EMBED_MAX_WIDTH = 600;
+
 /** The bytes and file extension a data URL carries, or null when it is not
  *  base64 data. */
 export function parseDataUrl(url: string): { base64: string; ext: string } | null {
@@ -2202,8 +2270,14 @@ export function imageExtension(name: string, contentType: string): string {
  *  written beside the note. An embed rides through the conversion as a plain
  *  word rather than as a link, because a link written into the HTML comes
  *  back out with its brackets escaped. A picture nothing was saved for is
- *  dropped rather than left pointing at a cid: nothing can open. */
-export function mailBodyMarkdown(html: string, toMd: (html: string) => string, embeds: ReadonlyMap<string, string> = new Map()): string {
+ *  dropped rather than left pointing at a cid: nothing can open.
+ *
+ *  Each embed is written at the size the message shows the picture at, which
+ *  is what keeps a photo inserted at 6.5 inches from arriving as the 1237
+ *  pixels the camera took. When the message leaves the size to the reader, a
+ *  picture bigger than a page gets one, since a note is not a mail client and
+ *  has no width of its own to shrink it to. */
+export function mailBodyMarkdown(html: string, toMd: (html: string) => string, embeds: ReadonlyMap<string, MailEmbed> = new Map()): string {
 	const used: string[] = [];
 	let stripped = "";
 	let last = 0;
@@ -2213,8 +2287,9 @@ export function mailBodyMarkdown(html: string, toMd: (html: string) => string, e
 		if (img.tracking) continue;
 		const embed = img.ref ? embeds.get(img.ref.key) : undefined;
 		if (embed) {
+			const natural = embed.naturalWidth ?? 0;
 			stripped += ` ${imgToken(used.length)} `;
-			used.push(embed);
+			used.push(withEmbedWidth(embed.link, declaredWidth(img.tag) ?? (natural > EMBED_MAX_WIDTH ? EMBED_MAX_WIDTH : null)));
 		} else if (!img.ref) {
 			stripped += img.tag; // remote: the note points at it the way the message does
 		}

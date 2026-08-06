@@ -137,6 +137,8 @@ import {
 	mailBodyMarkdown,
 	mailInlineImages,
 	imageExtension,
+	imageSize,
+	withEmbedWidth,
 	normalizeCid,
 	parseDataUrl,
 	timedOnDay,
@@ -395,8 +397,8 @@ eq(
 			return asText(html);
 		},
 		new Map([
-			["image001.png@01da", "![[Mail/attachments/note 1.png]]"],
-			["data:0", "![[Mail/attachments/note 2.jpg]]"],
+			["image001.png@01da", { link: "![[Mail/attachments/note 1.png]]" }],
+			["data:0", { link: "![[Mail/attachments/note 2.jpg]]" }],
 		])
 	);
 	eq(md.includes("![[Mail/attachments/note 1.png]]"), true, "a saved cid picture becomes the embed of the file beside the note");
@@ -408,11 +410,39 @@ eq(
 	eq(md.startsWith("Hello there"), true, "the message's own words lead the note");
 
 	eq(
-		mailBodyMarkdown('<a href="https://example.com/x"><img src="cid:logo@1"></a>', withLinks, new Map([["logo@1", "![[logo.png]]"]])),
+		mailBodyMarkdown('<a href="https://example.com/x"><img src="cid:logo@1"></a>', withLinks, new Map([["logo@1", { link: "![[logo.png]]" }]])),
 		"![[logo.png]]",
 		"a linked picture keeps the picture; an embed cannot sit inside a link"
 	);
 	eq(mailBodyMarkdown("<p>Plain words</p>", asText), "Plain words", "a body with no pictures converts on its own");
+
+	// --- how wide a saved picture is written ---
+	const sized = (tag: string, naturalWidth?: number) => mailBodyMarkdown(tag, asText, new Map([["p@1", { link: "![[p.jpg]]", naturalWidth }]]));
+	eq(sized('<img src="cid:p@1" width=624 height=351>'), "![[p.jpg|624]]", "the width the message shows a picture at is the width the note embeds it at");
+	eq(sized("<img src=\"cid:p@1\" style='width:6.5in;height:3.65in'>"), "![[p.jpg|624]]", "Word's inches become the pixels the message renders at");
+	eq(sized('<img src="cid:p@1" width="24px">'), "![[p.jpg|24]]", "a small logo keeps its small size");
+	eq(sized('<img src="cid:p@1" width="100%">', 1237), "![[p.jpg|600]]", "a width in percent sizes to the message, so the picture's own size decides");
+	eq(sized('<img src="cid:p@1">', 1237), "![[p.jpg|600]]", "a picture the message never sized, bigger than a page, is brought down to one");
+	eq(sized('<img src="cid:p@1">', 420), "![[p.jpg]]", "one that already fits is left to render at its own size");
+	eq(sized('<img src="cid:p@1">'), "![[p.jpg]]", "and a size nothing knows is not invented");
+	eq(withEmbedWidth("![note 1.png](Mail/attachments/note%201.png)", 600), "![note 1.png|600](Mail/attachments/note%201.png)", "a markdown-style embed carries its width in the alt text");
+	eq(withEmbedWidth("![[p.jpg]]", null), "![[p.jpg]]", "no width, no change");
+}
+{
+	// the first bytes of a file, which is all a size needs
+	const png = new Uint8Array(32);
+	png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+	png.set([0, 0, 4, 210], 16); // 1234 wide
+	png.set([0, 0, 2, 208], 20); // 720 high
+	eq(imageSize(png), { w: 1234, h: 720 }, "a PNG's size comes off its IHDR");
+	const gif = new Uint8Array(32);
+	gif.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x20, 0x03, 0x84, 0x01], 0);
+	eq(imageSize(gif), { w: 800, h: 388 }, "a GIF's size is little endian in its screen descriptor");
+	const jpg = new Uint8Array(48);
+	jpg.set([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10], 0); // APP0, 16 bytes to skip
+	jpg.set([0xff, 0xc0, 0x00, 0x11, 0x08, 0x06, 0x00, 0x04, 0xd5], 20); // SOF0: 1536 high, 1237 wide
+	eq(imageSize(jpg), { w: 1237, h: 1536 }, "a JPEG's size is behind however many segments come first");
+	eq(imageSize(new Uint8Array([0x3c, 0x73, 0x76, 0x67])), null, "an SVG has no pixel size to read");
 }
 eq(parseDataUrl("data:image/png;base64,QUJD"), { base64: "QUJD", ext: "png" }, "a data URL gives up its bytes and its kind");
 eq(parseDataUrl("https://example.com/x.png"), null, "a link is not a data URL");
