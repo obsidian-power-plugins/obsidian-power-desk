@@ -2100,6 +2100,150 @@ export function stripHtml(html: string): string {
 		.trim();
 }
 
+/* ---------- a message as Markdown ---------- */
+
+/** One picture a body shows inline: the content id it points at with
+ *  src="cid:…", or the data URL it carries in the src itself. `key` is what
+ *  the Markdown pass looks the saved file up by, so both halves have to
+ *  derive it the same way, which is why they share one walk of the HTML. */
+export type MailInlineImage = { key: string; cid?: string; dataUrl?: string };
+
+/** A content id as it can be compared: Graph reports it bare, some senders
+ *  write it inside angle brackets, and the case never matters. */
+export function normalizeCid(cid: string): string {
+	return cid.trim().replace(/^<+|>+$/g, "").toLowerCase();
+}
+
+const attrOf = (tag: string, name: string): string =>
+	new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i")
+		.exec(tag)
+		?.slice(1)
+		.find((v) => v !== undefined) ?? "";
+
+/** A tag's width or height in pixels, from the attribute or the style, or
+ *  null when it is given in anything but pixels (a percentage sizes to the
+ *  message, and says nothing about how big the picture is). */
+function pixelSize(tag: string, name: "width" | "height"): number | null {
+	const styled = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([\\d.]+)\\s*px`, "i").exec(attrOf(tag, "style"))?.[1];
+	const attr = attrOf(tag, name).trim();
+	const raw = styled ?? (/^[\d.]+(?:px)?$/i.test(attr) ? attr : "");
+	const n = parseFloat(raw);
+	return Number.isFinite(n) ? n : null;
+}
+
+/** True for the invisible pixel a newsletter loads to report that a message
+ *  was opened. Nothing is gained by writing those into a vault. */
+function isTrackingPixel(tag: string): boolean {
+	const w = pixelSize(tag, "width");
+	const h = pixelSize(tag, "height");
+	return (w !== null && w <= 2) || (h !== null && h <= 2);
+}
+
+/** Every <img> in a body, in order, with what it points at. */
+function imagesIn(html: string): { tag: string; start: number; end: number; ref: MailInlineImage | null; tracking: boolean }[] {
+	const out: { tag: string; start: number; end: number; ref: MailInlineImage | null; tracking: boolean }[] = [];
+	let data = 0;
+	for (const m of html.matchAll(/<img\b[^>]*>/gi)) {
+		const tag = m[0];
+		const src = attrOf(tag, "src").trim();
+		const cid = /^cid:/i.test(src) ? normalizeCid(src.slice(4)) : "";
+		// a data URL carries no id of its own, so its place in the message is
+		// its name; both passes number them off the same walk
+		const ref: MailInlineImage | null = cid ? { key: cid, cid } : /^data:image\//i.test(src) ? { key: `data:${data++}`, dataUrl: src } : null;
+		out.push({ tag, start: m.index, end: m.index + tag.length, ref, tracking: isTrackingPixel(tag) });
+	}
+	return out;
+}
+
+/** The inline pictures a body shows that have to be saved before a note can
+ *  show them: content-id references and data URLs, tracking pixels left
+ *  behind. Remote images are not here, since a note can point at those the
+ *  way the message does. */
+export function mailInlineImages(html: string): MailInlineImage[] {
+	const out: MailInlineImage[] = [];
+	for (const img of imagesIn(html)) {
+		if (!img.ref || img.tracking) continue;
+		if (!out.some((r) => r.key === img.ref?.key)) out.push(img.ref);
+	}
+	return out;
+}
+
+/** The word a saved picture rides through the conversion as. Letters and
+ *  digits only, because anything with punctuation in it comes back escaped. */
+const imgToken = (n: number) => `PDMAILIMAGE${n}ENDIMAGE`;
+
+/** The bytes and file extension a data URL carries, or null when it is not
+ *  base64 data. */
+export function parseDataUrl(url: string): { base64: string; ext: string } | null {
+	const m = /^data:([\w.+-]+\/[\w.+-]+)?[^,]*;base64,([\s\S]+)$/i.exec(url.trim());
+	if (!m) return null;
+	return { base64: m[2].replace(/\s+/g, ""), ext: imageExtension("", m[1] ?? "") };
+}
+
+/** What to call a saved picture's file. The attachment's own name usually
+ *  carries the extension; the content type answers when it does not. */
+export function imageExtension(name: string, contentType: string): string {
+	const named = /\.([a-z0-9]{2,5})$/i.exec(name.trim())?.[1];
+	if (named) return named.toLowerCase();
+	const sub = /^image\/([\w.+-]+)/i.exec(contentType.trim())?.[1]?.toLowerCase() ?? "";
+	if (sub === "jpeg") return "jpg";
+	if (sub === "svg+xml") return "svg";
+	if (sub === "x-icon" || sub === "vnd.microsoft.icon") return "ico";
+	return /^[a-z0-9]+$/.test(sub) ? sub : "png";
+}
+
+/** A message body as Markdown for a note.
+ *
+ *  The stripped text a saved message used to carry threw away every heading,
+ *  list, link and picture in it. Obsidian's own htmlToMarkdown does the
+ *  conversion, passed in so this file stays free of the API, with the
+ *  mail-specific work either side: styles, scripts and tracking pixels out
+ *  first, and each inline picture swapped for the embed of the file already
+ *  written beside the note. An embed rides through the conversion as a plain
+ *  word rather than as a link, because a link written into the HTML comes
+ *  back out with its brackets escaped. A picture nothing was saved for is
+ *  dropped rather than left pointing at a cid: nothing can open. */
+export function mailBodyMarkdown(html: string, toMd: (html: string) => string, embeds: ReadonlyMap<string, string> = new Map()): string {
+	const used: string[] = [];
+	let stripped = "";
+	let last = 0;
+	for (const img of imagesIn(html)) {
+		stripped += html.slice(last, img.start);
+		last = img.end;
+		if (img.tracking) continue;
+		const embed = img.ref ? embeds.get(img.ref.key) : undefined;
+		if (embed) {
+			stripped += ` ${imgToken(used.length)} `;
+			used.push(embed);
+		} else if (!img.ref) {
+			stripped += img.tag; // remote: the note points at it the way the message does
+		}
+	}
+	stripped += html.slice(last);
+	const md = toMd(
+		stripped
+			.replace(/<style[\s\S]*?<\/style>/gi, "")
+			.replace(/<script[\s\S]*?<\/script>/gi, "")
+			.replace(/<!--[\s\S]*?-->/g, "")
+			.replace(/<\/?o:p[^>]*>/gi, "")
+	);
+	return used
+		.reduce(
+			(s, embed, i) => s.split(imgToken(i)).join(embed),
+			// a linked picture converts to [token](url), and an embed cannot sit
+			// inside a link, so the picture keeps its place and the link goes
+			md
+				.replace(/\[\s*(PDMAILIMAGE\d+ENDIMAGE)\s*\]\([^)]*\)/g, "$1")
+				// the spaces that held the word apart from the text around it are
+				// not wanted once a picture has a line to itself
+				.replace(/^[ \t]+(PDMAILIMAGE\d+ENDIMAGE)[ \t]*$/gm, "$1")
+		)
+		.replace(/\u00A0/g, " ")
+		.replace(/[ \t]+$/gm, "")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
 const JOIN_RE = /https:\/\/(?:teams\.microsoft\.com|teams\.live\.com|meet\.google\.com|[\w.-]*zoom\.us|[\w.-]*webex\.com|meet\.jit\.si)\/[^\s"'<>\])]+/i;
 
 /** What to call the thing a join link opens. A reminder that prints the link

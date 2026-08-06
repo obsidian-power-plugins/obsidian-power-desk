@@ -134,6 +134,11 @@ import {
 	spansForRow,
 	stepAnchor,
 	stripHtml,
+	mailBodyMarkdown,
+	mailInlineImages,
+	imageExtension,
+	normalizeCid,
+	parseDataUrl,
 	timedOnDay,
 	vaultDateSpan,
 	fmtVaultDate,
@@ -361,6 +366,61 @@ eq(
 	'Agenda:\n1. Hello & welcome\nBring "notes"',
 	"stripHtml makes readable text"
 );
+
+// --- a message as Markdown ---
+{
+	// the conversion itself is Obsidian's htmlToMarkdown; these stand in for it,
+	// so what is asserted here is the mail-specific work either side of it
+	const asText = (html: string) => stripHtml(html);
+	const withLinks = (html: string) => stripHtml(html.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)"));
+	const body =
+		"<html><head><style>p{color:red}</style></head><body>" +
+		"<p>Hello <b>there</b></p>" +
+		'<img src="cid:image001.png@01DA" alt="chart">' +
+		'<img src="https://cdn.example.com/banner.png">' +
+		'<img src="cid:pixel@track" width="1" height="1">' +
+		'<img src="data:image/jpeg;base64,QUJD">' +
+		'<img src="cid:gone@x">' +
+		"</body></html>";
+
+	eq(normalizeCid("<Image001.png@01DA>"), "image001.png@01da", "a content id compares without its brackets or case");
+	eq(mailInlineImages(body).map((r) => r.key), ["image001.png@01da", "data:0", "gone@x"], "the pictures to save are the cid and data ones, tracking pixels left out");
+	eq(mailInlineImages(body)[1].dataUrl, "data:image/jpeg;base64,QUJD", "a data URL is carried as it stands, since it is its own bytes");
+
+	let handed = "";
+	const md = mailBodyMarkdown(
+		body,
+		(html) => {
+			handed = html;
+			return asText(html);
+		},
+		new Map([
+			["image001.png@01da", "![[Mail/attachments/note 1.png]]"],
+			["data:0", "![[Mail/attachments/note 2.jpg]]"],
+		])
+	);
+	eq(md.includes("![[Mail/attachments/note 1.png]]"), true, "a saved cid picture becomes the embed of the file beside the note");
+	eq(md.includes("![[Mail/attachments/note 2.jpg]]"), true, "a saved data-url picture becomes an embed too");
+	eq(md.includes("cid:"), false, "a picture nothing was saved for is dropped, not left pointing at a cid");
+	eq(handed.includes("cdn.example.com/banner.png"), true, "a remote picture is left for the conversion, the way the message points at it");
+	eq(handed.includes("pixel@track"), false, "the tracking pixel never reaches the conversion");
+	eq(handed.includes("color:red"), false, "styles never reach the conversion");
+	eq(md.startsWith("Hello there"), true, "the message's own words lead the note");
+
+	eq(
+		mailBodyMarkdown('<a href="https://example.com/x"><img src="cid:logo@1"></a>', withLinks, new Map([["logo@1", "![[logo.png]]"]])),
+		"![[logo.png]]",
+		"a linked picture keeps the picture; an embed cannot sit inside a link"
+	);
+	eq(mailBodyMarkdown("<p>Plain words</p>", asText), "Plain words", "a body with no pictures converts on its own");
+}
+eq(parseDataUrl("data:image/png;base64,QUJD"), { base64: "QUJD", ext: "png" }, "a data URL gives up its bytes and its kind");
+eq(parseDataUrl("https://example.com/x.png"), null, "a link is not a data URL");
+eq(imageExtension("logo.PNG", ""), "png", "the file's own name names the extension");
+eq(imageExtension("", "image/jpeg"), "jpg", "jpeg is written jpg");
+eq(imageExtension("", "image/svg+xml"), "svg", "svg keeps its short name");
+eq(imageExtension("", "application/octet-stream"), "png", "an unhelpful content type still yields something openable");
+
 eq(findJoinUrl("join here https://teams.microsoft.com/l/meetup-join/abc?x=1 now"), "https://teams.microsoft.com/l/meetup-join/abc?x=1", "finds a Teams link");
 eq(findJoinUrl("call at https://us02web.zoom.us/j/123456"), "https://us02web.zoom.us/j/123456", "finds a Zoom link on a subdomain");
 eq(findJoinUrl("nothing to join"), null, "no link is null");
