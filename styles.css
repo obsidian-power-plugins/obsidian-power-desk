@@ -3897,8 +3897,15 @@ button.pcal-card-more .svg-icon {
 	display: flex;
 }
 
-.pcal-mail-row:hover .pcal-mail-marks,
-.pcal-mail-row.is-selected .pcal-mail-marks {
+/* Only the flag steps aside for the quick actions, because the actions bring
+   their own flag button and two flag controls side by side is one too many.
+   The clip and the category colors are indicators with no equivalent among
+   the buttons, so hiding them dropped information from the row being looked
+   at hardest: a selected row keeps its actions up for as long as it is
+   selected, which is exactly when its category matters. They sit left of the
+   buttons, in the room the padding below already makes. */
+.pcal-mail-row:hover .pcal-mail-flagmark,
+.pcal-mail-row.is-selected .pcal-mail-flagmark {
 	visibility: hidden;
 }
 
@@ -3914,7 +3921,7 @@ button.pcal-card-more .svg-icon {
 		position: static;
 	}
 
-	.pcal-mail-row .pcal-mail-marks {
+	.pcal-mail-row .pcal-mail-flagmark {
 		visibility: visible;
 	}
 
