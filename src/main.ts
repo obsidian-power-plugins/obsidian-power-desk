@@ -4026,6 +4026,21 @@ export default class PowerDeskPlugin extends Plugin {
 		}
 	}
 
+	/** The first of Outlook's colors this mailbox is not already using, so a new
+	 *  category is distinguishable without asking for a second decision. */
+	freeCategoryColor(accountId: string): string {
+		const used = new Set(this.categoriesFor(accountId).map((x) => x.color));
+		for (let i = 0; i < 25; i++) if (!used.has(`preset${i}`)) return `preset${i}`;
+		return "preset0";
+	}
+
+	/** Whether this mailbox will answer questions about its categories at all.
+	 *  The list, and making one, both read under MailboxSettings, which is the
+	 *  permission inbox rules already ask for. */
+	canReadCategories(accountId: string): boolean {
+		return !!this.accountById(accountId)?.grantedScope.includes("MailboxSettings");
+	}
+
 	/** The color a category should be drawn in, from its mailbox's list. */
 	categoryColorFor(accountId: string, name: string): string {
 		const hit = this.categoriesFor(accountId).find((c) => c.displayName.toLowerCase() === name.toLowerCase());
@@ -7358,11 +7373,16 @@ class MailView extends ItemView {
 			}
 
 			// Categories: the mailbox's own list, each one a place to open
-			// rather than only a label to apply. A mailbox with no categories,
-			// or one connected without the setting scope, has no branch at all
-			// rather than an empty one.
+			// rather than only a label to apply.
+			//
+			// The branch is drawn even when the list is empty, which it was not
+			// at first. Hiding it meant a mailbox with no categories yet showed
+			// nothing at all, and the way to make one lives behind this very
+			// branch, so the feature was invisible to exactly the people who had
+			// not used it. An empty branch says which of the two reasons it is
+			// empty for, and offers the way out of both.
 			const cats = this.plugin.categoriesFor(a.id);
-			if (cats.length) {
+			{
 				const catKey = `cats:${a.id}`;
 				const catCollapsed = collapsed.has(catKey);
 				const chead = host.createDiv("pcal-folder-row pcal-folder-catroot");
@@ -7376,6 +7396,13 @@ class MailView extends ItemView {
 				chead.addEventListener("contextmenu", (e) => {
 					e.preventDefault();
 					const menu = new Menu();
+					menu.addItem((i) =>
+						i
+							.setTitle("New category...")
+							.setIcon("plus")
+							.setDisabled(!this.plugin.canReadCategories(a.id))
+							.onClick(() => this.askNewCategory(a.id))
+					);
 					menu.addItem((i) => i.setTitle("Manage categories...").setIcon("settings-2").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.render()).open()));
 					menu.showAtMouseEvent(e);
 				});
@@ -7407,6 +7434,26 @@ class MailView extends ItemView {
 							menu.addItem((i) => i.setTitle("Manage categories...").setIcon("settings-2").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.render()).open()));
 							menu.showAtMouseEvent(e);
 						});
+					}
+					// an account that cannot read its categories is not the same
+					// as one with none, and saying "New category" to the first
+					// would offer something the mailbox is going to refuse
+					if (!cats.length && !this.plugin.canReadCategories(a.id)) {
+						const note = host.createDiv("pcal-folder-row pcal-folder-addcat");
+						note.addClass("pcal-depth-1");
+						note.createSpan("pcal-folder-twist");
+						const ic = note.createSpan("pcal-folder-ic");
+						setIcon(ic, "key-round");
+						note.createSpan({ cls: "pcal-folder-name", text: "Reconnect to read categories" });
+						note.addEventListener("click", () => this.plugin.openOwnSettings());
+					} else if (!cats.length) {
+						const add = host.createDiv("pcal-folder-row pcal-folder-addcat");
+						add.addClass("pcal-depth-1");
+						add.createSpan("pcal-folder-twist");
+						const ic = add.createSpan("pcal-folder-ic");
+						setIcon(ic, "plus");
+						add.createSpan({ cls: "pcal-folder-name", text: "New category" });
+						add.addEventListener("click", () => this.askNewCategory(a.id));
 					}
 				}
 			}
@@ -7501,8 +7548,13 @@ class MailView extends ItemView {
 		for (const a of accounts) {
 			parts.push(`@${a.id}|${this.plugin.nameOf(a)}|${colorOf.get(a.id) ?? ""}|${this.plugin.inboxIdFor(a) ?? ""}|${this.plugin.unreadSubtreeCount(a)}`);
 			// categories land after the tree does, and a pinned one wears its
-			// color up in Favorites, so this is read even for a folded account
-			parts.push(this.plugin.categoriesFor(a.id).map((c) => `${c.displayName}=${c.color}=${this.plugin.categoryUnread(a.id, c.displayName)}`).join("~"));
+			// color up in Favorites, so this is read even for a folded account.
+			// The scope rides along because an empty branch says something
+			// different depending on it, and a reconnect changes it underneath.
+			parts.push(
+				`${this.plugin.canReadCategories(a.id) ? 1 : 0}|` +
+					this.plugin.categoriesFor(a.id).map((c) => `${c.displayName}=${c.color}=${this.plugin.categoryUnread(a.id, c.displayName)}`).join("~")
+			);
 			if (collapsed.has(`acct:${a.id}`)) continue;
 			const tree = this.plugin.folderTreeFor(a);
 			if (!tree.length) parts.push("(loading)");
@@ -7572,6 +7624,16 @@ class MailView extends ItemView {
 			this.multiSel.clear();
 			this.render();
 		});
+	}
+
+	/** Make a category from the tree, without a trip through the manager. The
+	 *  color is not asked for: the mailbox's first unused one is a good answer
+	 *  and the manager can recolor it later. */
+	private askNewCategory(accountId: string) {
+		new PromptModal(this.app, "New category", [{ label: "Name", value: "", placeholder: "Waiting on" }], ([name]) => {
+			if (!name.trim()) return;
+			void this.plugin.newCategory(accountId, name, this.plugin.freeCategoryColor(accountId)).then(() => this.render());
+		}).open();
 	}
 
 	private askNewFolder(accountId: string, parentId: string | null, whereName: string) {
@@ -8927,15 +8989,7 @@ class CategoriesModal extends Modal {
 				if (!name.trim()) return;
 				// a fresh category gets the first color nothing else is using,
 				// so a new one is distinguishable without a second decision
-				const used = new Set(this.plugin.categoriesFor(this.accountId).map((x) => x.color));
-				let preset = "preset0";
-				for (let i = 0; i < 25; i++) {
-					if (!used.has(`preset${i}`)) {
-						preset = `preset${i}`;
-						break;
-					}
-				}
-				void this.plugin.newCategory(this.accountId, name, preset).then(() => {
+				void this.plugin.newCategory(this.accountId, name, this.plugin.freeCategoryColor(this.accountId)).then(() => {
 					this.draw();
 					this.onChange();
 				});

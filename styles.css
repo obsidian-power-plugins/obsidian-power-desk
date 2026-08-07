@@ -1675,7 +1675,8 @@ button.pcal-card-more .svg-icon {
 	text-transform: uppercase;
 }
 
-.pcal-folder-addsearch .pcal-folder-name {
+.pcal-folder-addsearch .pcal-folder-name,
+.pcal-folder-addcat .pcal-folder-name {
 	color: var(--text-muted);
 }
 
