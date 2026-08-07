@@ -2761,13 +2761,22 @@ export default class PowerDeskPlugin extends Plugin {
 		return n;
 	}
 
-	/** Unread in a category, counted from what has been read of it rather than
-	 *  asked for separately. The mailbox has no unread-per-category count to
-	 *  give, and a second query per category on every tree draw would cost more
-	 *  than the number is worth; a category nobody has opened simply shows no
-	 *  count until it has been. */
-	categoryUnread(accountId: string, name: string): number {
-		return this.folderMail(accountId, categoryFolderId(name)).filter((m) => m.unread).length;
+	/** How much mail a category holds.
+	 *
+	 *  This counts everything, not the unread, which is where it parts company
+	 *  with the folders above it in the tree. A folder's number answers how much
+	 *  is waiting for you; a category's answers how much carries the label, and
+	 *  that is the number the list shows when you click it. Counting unread put
+	 *  a 2 beside a list of 3 and made the row look broken, which it was: a
+	 *  category's count and its own list must never disagree.
+	 *
+	 *  It counts what has been fetched rather than asking the mailbox, which has
+	 *  no per-category total to give and would want a query per category on
+	 *  every draw of the pane. So a category nobody has opened shows no count
+	 *  until it has been, and one larger than the fetch cap counts to the cap,
+	 *  exactly as its list does. */
+	categoryCount(accountId: string, name: string): number {
+		return this.folderMail(accountId, categoryFolderId(name)).length;
 	}
 
 	folderNamesFor(accountId: string): Map<string, string> {
@@ -7131,7 +7140,7 @@ class MailView extends ItemView {
 				const isUnread = fav.folderId === UNREAD_FOLDER;
 				const realName = cat ?? (isUnread ? "Unread Mail" : this.plugin.folderNamesFor(acc.id).get(fav.folderId) ?? "...");
 				const name = fav.name?.trim() || realName;
-				const count = cat ? this.plugin.categoryUnread(acc.id, cat) : isUnread ? this.plugin.unreadSubtreeCount(acc) : this.plugin.folderUnreadRollup(acc.id, fav.folderId);
+				const count = cat ? this.plugin.categoryCount(acc.id, cat) : isUnread ? this.plugin.unreadSubtreeCount(acc) : this.plugin.folderUnreadRollup(acc.id, fav.folderId);
 				const row = host.createDiv("pcal-folder-row pcal-fav-row");
 				row.toggleClass("pcal-fav-indent", !!fav.indent);
 				row.toggleClass("is-selected", this.folderSel?.accountId === acc.id && this.folderSel?.folderId === fav.folderId);
@@ -7416,8 +7425,8 @@ class MailView extends ItemView {
 						const dot = row.createSpan({ cls: "pcal-folder-catdot" });
 						dot.style.backgroundColor = categoryColor(cat.color);
 						row.createSpan({ cls: "pcal-folder-name", text: cat.displayName });
-						const unread = this.plugin.categoryUnread(a.id, cat.displayName);
-						if (unread > 0) row.createSpan({ cls: "pcal-folder-count", text: String(unread) });
+						const held = this.plugin.categoryCount(a.id, cat.displayName);
+						if (held > 0) row.createSpan({ cls: "pcal-folder-count", text: String(held) });
 						this.acceptCategoryDrop(row, a.id, cat.displayName);
 						row.addEventListener("click", () => {
 							this.plugin.clearMailSearch();
@@ -7553,7 +7562,7 @@ class MailView extends ItemView {
 			// different depending on it, and a reconnect changes it underneath.
 			parts.push(
 				`${this.plugin.canReadCategories(a.id) ? 1 : 0}|` +
-					this.plugin.categoriesFor(a.id).map((c) => `${c.displayName}=${c.color}=${this.plugin.categoryUnread(a.id, c.displayName)}`).join("~")
+					this.plugin.categoriesFor(a.id).map((c) => `${c.displayName}=${c.color}=${this.plugin.categoryCount(a.id, c.displayName)}`).join("~")
 			);
 			if (collapsed.has(`acct:${a.id}`)) continue;
 			const tree = this.plugin.folderTreeFor(a);
