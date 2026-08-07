@@ -1,6 +1,6 @@
 {
 	"name": "powerdesk",
-	"version": "2.10.4",
+	"version": "2.10.5",
 	"description": "Obsidian plugin: Microsoft 365, Google, CalDAV, and ICS calendars with a mail triage inbox",
 	"main": "main.js",
 	"type": "module",
