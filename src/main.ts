@@ -91,6 +91,9 @@ import { chunk, GRAPH_BATCH_MAX,
 	arrivalSummary,
 	categoryColor,
 	CATEGORY_COLOR_NAMES,
+	categoryFolderId,
+	folderIdCategory,
+	inCategory,
 	toggleCategory,
 	replaceCategory,
 	toGraphDateTime,
@@ -216,6 +219,7 @@ import {
 	setTodoTaskDone,
 	deleteTodoTask,
 	listMasterCategories,
+	fetchMessagesByCategory,
 	setMessageCategories,
 	createCategory,
 	updateCategoryColor,
@@ -2348,6 +2352,10 @@ export default class PowerDeskPlugin extends Plugin {
 			st.inFlight = false;
 			this.notify();
 			this.queueCachePersist();
+			// the tree lists categories beside the folders, so they load with
+			// it rather than waiting for the first Categorize menu. One read
+			// per session per account, and none without the scope.
+			void this.loadCategories(a.id);
 			void this.prefetchFolders(a);
 		}
 	}
@@ -2502,7 +2510,13 @@ export default class PowerDeskPlugin extends Plugin {
 			await this.mailboxGate(
 				a.id,
 				async () => {
-					if (folderId === UNREAD_FOLDER) {
+					const category = folderIdCategory(folderId);
+					if (category) {
+						const cap = Math.min(2000, Math.max(50, this.settings.mailMaxMessages || 500));
+						const raw = await fetchMessagesByCategory(await this.graphTokenFor(a), category, cap);
+						const fresh = raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
+						st.messages = fresh.sort((x, y) => y.receivedMs - x.receivedMs).slice(0, cap);
+					} else if (folderId === UNREAD_FOLDER) {
 						const fresh = await this.unreadAcrossInbox(a);
 						// This folder is a question the mailbox answers afresh every
 						// time, so a message you have just read is simply not in the
@@ -2723,6 +2737,11 @@ export default class PowerDeskPlugin extends Plugin {
 
 	folderMail(accountId: string, folderId: string): PCMail[] {
 		const messages = this.folderCache.get(`${accountId}:${folderId}`)?.messages ?? [];
+		// taking the category off a message is done from inside this very list,
+		// so the row has to leave as soon as it does rather than at the next
+		// fetch: the cached message object is the one Categorize just rewrote
+		const category = folderIdCategory(folderId);
+		if (category) return messages.filter((m) => inCategory(m, category));
 		if (folderId !== UNREAD_FOLDER) return messages;
 		// the Unread search folder scopes the mailbox-wide fetch to the inbox
 		// subtree once the folder tree knows it; until then, everything shows
@@ -2740,6 +2759,15 @@ export default class PowerDeskPlugin extends Plugin {
 		let n = 0;
 		for (const f of st.folders) if (subtree.has(f.id)) n += f.unread;
 		return n;
+	}
+
+	/** Unread in a category, counted from what has been read of it rather than
+	 *  asked for separately. The mailbox has no unread-per-category count to
+	 *  give, and a second query per category on every tree draw would cost more
+	 *  than the number is worth; a category nobody has opened simply shows no
+	 *  count until it has been. */
+	categoryUnread(accountId: string, name: string): number {
+		return this.folderMail(accountId, categoryFolderId(name)).filter((m) => m.unread).length;
 	}
 
 	folderNamesFor(accountId: string): Map<string, string> {
@@ -4034,13 +4062,32 @@ export default class PowerDeskPlugin extends Plugin {
 	async removeCategory(accountId: string, categoryId: string): Promise<void> {
 		const a = this.accountById(accountId);
 		if (!a) return;
+		const gone = this.categoriesFor(accountId).find((c) => c.id === categoryId)?.displayName;
 		try {
 			await deleteCategory(await this.graphTokenFor(a), categoryId);
+			// a category pinned to Favorites goes with it: the mail keeps the
+			// label, but there is no longer a category to open, and a pin that
+			// opened an ever-emptying list would be worse than none
+			if (gone) this.repointCategoryFavorite(accountId, gone, null);
 			this.categoryCache.delete(accountId);
 			await this.loadCategories(accountId);
 		} catch (e) {
 			this.graphErrorNotice(e);
 		}
+	}
+
+	/** Follow a category's pin through a rename, or drop it on a delete.
+	 *  Favorites store a folder id, and a category's id is its name, so a name
+	 *  that changes leaves the pin pointing at nothing without this. */
+	private repointCategoryFavorite(accountId: string, from: string, to: string | null) {
+		const oldId = categoryFolderId(from);
+		const s = this.settings;
+		if (!s.mailFavorites.some((f) => f.accountId === accountId && f.folderId === oldId)) return;
+		s.mailFavorites = to
+			? s.mailFavorites.map((f) => (f.accountId === accountId && f.folderId === oldId ? { ...f, folderId: categoryFolderId(to) } : f))
+			: s.mailFavorites.filter((f) => !(f.accountId === accountId && f.folderId === oldId));
+		this.queueSave();
+		this.notify();
 	}
 
 	/** How much mail a category is on, before anything is changed. */
@@ -4103,6 +4150,10 @@ export default class PowerDeskPlugin extends Plugin {
 				this.graphErrorNotice(e);
 			}
 		}
+		// a pinned category follows the rename rather than being left pointing
+		// at a name the mailbox no longer has. It moves even when the old one
+		// could not be retired, since the mail is under the new name either way
+		this.repointCategoryFavorite(accountId, from.displayName, to);
 		this.categoryCache.delete(accountId);
 		await this.loadCategories(accountId);
 		// the lists hold the old names until they are read again
@@ -5305,6 +5356,14 @@ class MailView extends ItemView {
 					run: () => go(a.id, folder.id, folder.name),
 				});
 			}
+			for (const c of this.plugin.categoriesFor(a.id)) {
+				out.push({
+					label: c.displayName,
+					hint: `${label} — category`,
+					terms: "category tag label",
+					run: () => go(a.id, categoryFolderId(c.displayName), c.displayName),
+				});
+			}
 			// a search folder is a saved query, not a place: it runs rather
 			// than navigates, exactly as clicking it in the tree does
 			for (const sf of s.mailSearchFolders.filter((f) => f.accountId === a.id)) {
@@ -6505,8 +6564,9 @@ class MailView extends ItemView {
 						: this.folderSel
 							? "Nothing here."
 							: "Inbox zero.";
-		// search results and the Unread folder both tag rows with their source folder
-		const showTags = !!search || this.folderSel?.folderId === UNREAD_FOLDER;
+		// search results, the Unread folder, and a category all gather mail from
+		// anywhere in the mailbox, so their rows say which folder it came from
+		const showTags = !!search || this.folderSel?.folderId === UNREAD_FOLDER || !!folderIdCategory(this.folderSel?.folderId ?? "");
 		const nameMaps = showTags ? new Map(accounts.map((acc) => [acc.id, this.plugin.folderNamesFor(acc.id)])) : null;
 		let shown = mail;
 		if (this.extraFilter === "attachments") shown = shown.filter((m) => m.hasAttachments);
@@ -7045,25 +7105,34 @@ class MailView extends ItemView {
 			for (const f of favs) {
 				const ac = accounts.find((x) => x.id === f.accountId);
 				if (!ac) continue;
-				const rn = f.folderId === UNREAD_FOLDER ? "Unread Mail" : this.plugin.folderNamesFor(ac.id).get(f.folderId) ?? "...";
+				const rn = folderIdCategory(f.folderId) ?? (f.folderId === UNREAD_FOLDER ? "Unread Mail" : this.plugin.folderNamesFor(ac.id).get(f.folderId) ?? "...");
 				const dn = f.name?.trim() || rn;
 				dispCounts.set(dn, (dispCounts.get(dn) ?? 0) + 1);
 			}
 			favs.forEach((fav, idx) => {
 				const acc = accounts.find((x) => x.id === fav.accountId);
 				if (!acc) return;
+				const cat = folderIdCategory(fav.folderId);
 				const isUnread = fav.folderId === UNREAD_FOLDER;
-				const realName = isUnread ? "Unread Mail" : this.plugin.folderNamesFor(acc.id).get(fav.folderId) ?? "...";
+				const realName = cat ?? (isUnread ? "Unread Mail" : this.plugin.folderNamesFor(acc.id).get(fav.folderId) ?? "...");
 				const name = fav.name?.trim() || realName;
-				const count = isUnread ? this.plugin.unreadSubtreeCount(acc) : this.plugin.folderUnreadRollup(acc.id, fav.folderId);
+				const count = cat ? this.plugin.categoryUnread(acc.id, cat) : isUnread ? this.plugin.unreadSubtreeCount(acc) : this.plugin.folderUnreadRollup(acc.id, fav.folderId);
 				const row = host.createDiv("pcal-folder-row pcal-fav-row");
 				row.toggleClass("pcal-fav-indent", !!fav.indent);
 				row.toggleClass("is-selected", this.folderSel?.accountId === acc.id && this.folderSel?.folderId === fav.folderId);
 				// favorites are the folders filed into most, so they take a
-				// dropped message too. Unread Mail is a search, not a place.
-				if (!isUnread) this.acceptMailDrop(row, acc.id, fav.folderId, name);
-				const ic = row.createSpan("pcal-folder-ic");
-				setIcon(ic, isUnread ? "mail-open" : fav.folderId === this.plugin.inboxIdFor(acc) ? "inbox" : "folder");
+				// dropped message too. A category takes one as well, and labels
+				// it rather than moving it, which is what dropping onto a
+				// category does in Outlook. Unread Mail is a search, not a place.
+				if (cat) this.acceptCategoryDrop(row, acc.id, cat);
+				else if (!isUnread) this.acceptMailDrop(row, acc.id, fav.folderId, name);
+				if (cat) {
+					const dot = row.createSpan({ cls: "pcal-folder-catdot" });
+					dot.style.backgroundColor = this.plugin.categoryColorFor(acc.id, cat);
+				} else {
+					const ic = row.createSpan("pcal-folder-ic");
+					setIcon(ic, isUnread ? "mail-open" : fav.folderId === this.plugin.inboxIdFor(acc) ? "inbox" : "folder");
+				}
 				row.createSpan({ cls: "pcal-folder-name", text: name });
 				if ((dispCounts.get(name) ?? 0) > 1) row.createSpan({ cls: "pcal-fav-acct", text: this.plugin.nameOf(acc) });
 				if (count > 0) row.createSpan({ cls: "pcal-folder-count", text: String(count) });
@@ -7288,6 +7357,60 @@ class MailView extends ItemView {
 				});
 			}
 
+			// Categories: the mailbox's own list, each one a place to open
+			// rather than only a label to apply. A mailbox with no categories,
+			// or one connected without the setting scope, has no branch at all
+			// rather than an empty one.
+			const cats = this.plugin.categoriesFor(a.id);
+			if (cats.length) {
+				const catKey = `cats:${a.id}`;
+				const catCollapsed = collapsed.has(catKey);
+				const chead = host.createDiv("pcal-folder-row pcal-folder-catroot");
+				chead.addClass("pcal-depth-0");
+				const ctw = chead.createSpan("pcal-folder-twist");
+				setIcon(ctw, catCollapsed ? "chevron-right" : "chevron-down");
+				const cic = chead.createSpan("pcal-folder-ic");
+				setIcon(cic, "tag");
+				chead.createSpan({ cls: "pcal-folder-name", text: "Categories" });
+				chead.addEventListener("click", () => toggleCollapse(catKey));
+				chead.addEventListener("contextmenu", (e) => {
+					e.preventDefault();
+					const menu = new Menu();
+					menu.addItem((i) => i.setTitle("Manage categories...").setIcon("settings-2").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.render()).open()));
+					menu.showAtMouseEvent(e);
+				});
+				if (!catCollapsed) {
+					for (const cat of cats) {
+						const fid = categoryFolderId(cat.displayName);
+						const row = host.createDiv("pcal-folder-row");
+						row.addClass("pcal-depth-1");
+						row.toggleClass("is-selected", this.folderSel?.accountId === a.id && this.folderSel?.folderId === fid);
+						row.createSpan("pcal-folder-twist"); // the empty chevron slot every tree row keeps
+						const dot = row.createSpan({ cls: "pcal-folder-catdot" });
+						dot.style.backgroundColor = categoryColor(cat.color);
+						row.createSpan({ cls: "pcal-folder-name", text: cat.displayName });
+						const unread = this.plugin.categoryUnread(a.id, cat.displayName);
+						if (unread > 0) row.createSpan({ cls: "pcal-folder-count", text: String(unread) });
+						this.acceptCategoryDrop(row, a.id, cat.displayName);
+						row.addEventListener("click", () => {
+							this.plugin.clearMailSearch();
+							this.folderSel = { accountId: a.id, folderId: fid, name: cat.displayName };
+							this.screen = "list";
+							this.autoSelectPending = true;
+							this.plugin.ensureFolderMail(a.id, fid, false);
+							this.render();
+						});
+						row.addEventListener("contextmenu", (e) => {
+							e.preventDefault();
+							const menu = new Menu();
+							menu.addItem((i) => i.setTitle(this.isFavorite(a.id, fid) ? "Remove from favorites" : "Add to favorites").onClick(() => this.toggleFavorite(a.id, fid)));
+							menu.addItem((i) => i.setTitle("Manage categories...").setIcon("settings-2").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.render()).open()));
+							menu.showAtMouseEvent(e);
+						});
+					}
+				}
+			}
+
 			// Search Folders close out the account, Outlook-style: a collapsible
 			// branch holding the virtual Unread view and any saved searches
 			const searchKey = `search:${a.id}`;
@@ -7377,6 +7500,9 @@ class MailView extends ItemView {
 		];
 		for (const a of accounts) {
 			parts.push(`@${a.id}|${this.plugin.nameOf(a)}|${colorOf.get(a.id) ?? ""}|${this.plugin.inboxIdFor(a) ?? ""}|${this.plugin.unreadSubtreeCount(a)}`);
+			// categories land after the tree does, and a pinned one wears its
+			// color up in Favorites, so this is read even for a folded account
+			parts.push(this.plugin.categoriesFor(a.id).map((c) => `${c.displayName}=${c.color}=${this.plugin.categoryUnread(a.id, c.displayName)}`).join("~"));
 			if (collapsed.has(`acct:${a.id}`)) continue;
 			const tree = this.plugin.folderTreeFor(a);
 			if (!tree.length) parts.push("(loading)");
@@ -7415,6 +7541,36 @@ class MailView extends ItemView {
 				this.multiSel.clear();
 				this.render();
 			});
+		});
+	}
+
+	/** Let a category row take a dragged message. Dropping labels the message
+	 *  rather than moving it, so it stays filed where it was and the notice
+	 *  says tagged rather than moved. Dropping something that already carries
+	 *  the category is not a mistake and does not report as one: what was
+	 *  asked for is the end state, and it is already true. */
+	private acceptCategoryDrop(row: HTMLElement, accountId: string, category: string) {
+		const mine = () => (this.mailDrag ?? []).filter((m) => m.accountId === accountId);
+		row.addEventListener("dragover", (e) => {
+			if (!mine().length) return;
+			e.preventDefault();
+			// copy, not move: the message is not going anywhere
+			if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+			row.addClass("pcal-mail-drop");
+		});
+		row.addEventListener("dragleave", () => row.removeClass("pcal-mail-drop"));
+		row.addEventListener("drop", (e) => {
+			row.removeClass("pcal-mail-drop");
+			const dragged = mine();
+			if (!dragged.length) return;
+			e.preventDefault();
+			e.stopPropagation();
+			this.mailDrag = null;
+			const fresh = dragged.filter((m) => !inCategory(m, category));
+			for (const t of fresh) void this.plugin.setMailCategories(t, toggleCategory(t.categories, category));
+			if (fresh.length) new Notice(fresh.length > 1 ? `Power Desk: tagged ${fresh.length} messages ${category}.` : `Power Desk: tagged ${category}.`);
+			this.multiSel.clear();
+			this.render();
 		});
 	}
 

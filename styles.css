@@ -3346,6 +3346,20 @@ button.pcal-card-more .svg-icon {
 	vertical-align: -2px;
 }
 
+/* a category stands where a folder's icon would, as its own color rather than
+   a tag glyph twenty-five times over: the color is how Outlook tells one
+   category from another, and a column of identical gray tags would say
+   nothing. The transparent side borders hold the width of the icon it
+   replaces, so the names still line up down the tree. */
+.pcal-folder-catdot {
+	width: 13px;
+	height: 9px;
+	border-radius: 2px;
+	flex-shrink: 0;
+	background-clip: content-box;
+	border-inline: 2px solid transparent;
+}
+
 .pcal-folder-name {
 	flex: 1;
 	min-width: 0;

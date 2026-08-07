@@ -951,6 +951,35 @@ export function toggleCategory(current: string[] | undefined, name: string): str
 	return hit ? have.filter((c) => c.toLowerCase() !== name.toLowerCase()) : [...have, name];
 }
 
+/** A category dressed as a folder id, so a category can be selected, pinned,
+ *  and refreshed through the same paths a real folder uses.
+ *
+ *  The prefix cannot collide with a real id: Graph folder ids are base64url,
+ *  which has no colon in it. The category's own name rides along because
+ *  categories have no stable id on a message, only a display name. */
+export const CATEGORY_PREFIX = "__cat__:";
+
+export function categoryFolderId(name: string): string {
+	return `${CATEGORY_PREFIX}${name}`;
+}
+
+/** The category a folder id stands for, or null when it names a real folder.
+ *  An empty name is not a category: Graph refuses to store one, so a bare
+ *  prefix can only be corruption, and reading it as "every message" would be
+ *  the wrong guess. */
+export function folderIdCategory(folderId: string): string | null {
+	if (!folderId.startsWith(CATEGORY_PREFIX)) return null;
+	const name = folderId.slice(CATEGORY_PREFIX.length);
+	return name ? name : null;
+}
+
+/** Whether a message still carries the category its list was built from.
+ *  Categories come off a message from inside the list that gathered them, so
+ *  the view has to be able to drop a row the mailbox no longer agrees with. */
+export function inCategory(m: PCMail, name: string): boolean {
+	return (m.categories ?? []).some((c) => c.toLowerCase() === name.toLowerCase());
+}
+
 /* ---------- shortcuts ---------- */
 
 export interface Shortcut {

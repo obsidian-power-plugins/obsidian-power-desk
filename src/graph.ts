@@ -293,6 +293,31 @@ export async function fetchUnreadInFolder(accessToken: string, folderId: string,
 	return pagedGet(url, accessToken, {}, pages);
 }
 
+/** Everything in the mailbox carrying one category, newest first.
+ *
+ *  The same dummy receivedDateTime bound Unread Mail uses buys the $orderby,
+ *  and it matters more here: a category can sit on years of mail, so a capped
+ *  read that came back in the store's own order would show the OLDEST of it
+ *  and call that the category. Exchange does refuse some filter and sort
+ *  pairings as too complex, and a lambda beside a sort is exactly the shape
+ *  it refuses, so a rejection drops to the unsorted read and sorts what came
+ *  back. That path can still be short of the true newest on a huge category,
+ *  which is why it raises the cap rather than trusting the first page. */
+export async function fetchMessagesByCategory(accessToken: string, name: string, want = 100): Promise<unknown[]> {
+	const quoted = name.replace(/'/g, "''");
+	const any = `categories/any(a:a eq '${quoted}')`;
+	const pages = Math.min(20, Math.max(1, Math.ceil(want / 50)));
+	const ordered =
+		`https://graph.microsoft.com/v1.0/me/messages?$filter=${encodeURIComponent(`receivedDateTime ge 1900-01-01T00:00:00Z and ${any}`)}` +
+		`&$orderby=${encodeURIComponent("receivedDateTime desc")}&$top=50&$select=${MAIL_SELECT}`;
+	try {
+		return await pagedGet(ordered, accessToken, {}, pages);
+	} catch {
+		const plain = `https://graph.microsoft.com/v1.0/me/messages?$filter=${encodeURIComponent(any)}&$top=100&$select=${MAIL_SELECT}`;
+		return pagedGet(plain, accessToken, {}, Math.min(40, pages * 4));
+	}
+}
+
 const FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount,unreadItemCount,totalItemCount";
 
 /** The inbox's folder id, so tree ordering never depends on a display name

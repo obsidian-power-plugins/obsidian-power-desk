@@ -80,6 +80,9 @@ import {
 	toGraphDateTime,
 	fromGraphDateTime,
 	categoryColor,
+	categoryFolderId,
+	folderIdCategory,
+	inCategory,
 	CATEGORY_COLOR_NAMES,
 	toggleCategory,
 	replaceCategory,
@@ -549,6 +552,26 @@ eq(mimeForExtension(""), "application/octet-stream", "and so does no extension a
 	eq(toggleCategory(["Red", "Blue"], "Green"), ["Red", "Blue", "Green"], "adding appends, keeping the mailbox's order");
 	eq(toggleCategory(["Red"], "red"), [], "the match ignores case, as Outlook does");
 	eq(toggleCategory(["Red", "Blue"], "BLUE"), ["Red"], "whichever way the case falls");
+}
+
+// --- categories as places: the id a pinned category travels under ---
+{
+	const mail = (cats?: string[]): PCMail => ({ id: "m", accountId: "a", accountLabel: "l", from: "f", fromAddress: "f@x.com", subject: "s", preview: "", receivedMs: 0, unread: false, categories: cats });
+
+	eq(folderIdCategory(categoryFolderId("Waiting on")), "Waiting on", "a category survives the round trip into a folder id");
+	eq(folderIdCategory(categoryFolderId("Red: urgent")), "Red: urgent", "including a name with the separator in it");
+	eq(categoryFolderId("Red") === categoryFolderId("red"), false, "two categories differing only in case stay two ids");
+	eq(folderIdCategory("AAMkAGI2THVSAAA="), null, "a real Graph folder id is not read as a category");
+	eq(folderIdCategory("__unread__"), null, "and neither is the Unread search folder");
+	eq(folderIdCategory("__cat__:"), null, "a prefix with no name is not a category rather than every message");
+
+	eq(inCategory(mail(["Red"]), "Red"), true, "a message carrying the category is in it");
+	eq(inCategory(mail(["Red"]), "red"), true, "the match ignores case, as Outlook does");
+	eq(inCategory(mail(["Blue"]), "Red"), false, "one carrying a different category is not");
+	eq(inCategory(mail([]), "Red"), false, "nor is one carrying none");
+	eq(inCategory(mail(undefined), "Red"), false, "nor one that never had the field");
+	// the row has to leave the list the moment Categorize takes the label off
+	eq(inCategory(mail(toggleCategory(["Red", "Blue"], "Red")), "Red"), false, "taking the category off drops it out of that category's list");
 }
 
 // --- replacing a category everywhere ---
