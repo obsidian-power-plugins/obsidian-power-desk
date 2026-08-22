@@ -14,6 +14,8 @@ import {
 	dedupePeople,
 	dragTimes,
 	dueReminders,
+	isPersonalMicrosoft,
+	MSA_TENANT,
 	eventDaySpan,
 	eventsOnDay,
 	findJoinUrl,
@@ -1963,6 +1965,24 @@ eq(isoWeekNum("2026-12-28"), 53, "the last monday of 2026 opens week 53");
 	eq(dueReminders([ev], at(596), 5, fired).length, 0, "a fired reminder never repeats");
 	eq(dueReminders([{ ...ev, id: "d", declined: true }], at(596), 5, new Set()).length, 0, "declined meetings stay quiet");
 	eq(dueReminders([allDayEv("2026-07-17", 1)], at(596), 5, new Set()).length, 0, "all-day banners stay quiet");
+}
+
+// --- which Microsoft accounts are personal (it decides what to ask consent for) ---
+{
+	eq(isPersonalMicrosoft(true, "fd64b9b8-7d31-494b-aedc-5c64cd1bd339", "someone@contoso.com"), true, "a recorded verdict beats the tenant");
+	eq(isPersonalMicrosoft(false, "consumers", "someone@outlook.com"), false, "a recorded verdict beats the address too");
+	eq(isPersonalMicrosoft(undefined, "consumers", "someone@contoso.com"), true, "'consumers' admits personal accounts only");
+	eq(isPersonalMicrosoft(undefined, "CONSUMERS", "someone@contoso.com"), true, "the authority is matched case-insensitively");
+	// the account that could not reconnect: pinned to 'common', personal all the same
+	eq(isPersonalMicrosoft(undefined, "common", "steve@outlook.com"), true, "an outlook.com address at 'common' is personal");
+	eq(isPersonalMicrosoft(undefined, "common", "Steve@Hotmail.COM"), true, "the address is matched case-insensitively");
+	eq(isPersonalMicrosoft(undefined, "common", "someone@live.com"), true, "live.com is personal");
+	eq(isPersonalMicrosoft(undefined, "common", "someone@msn.com"), true, "msn.com is personal");
+	eq(isPersonalMicrosoft(undefined, "common", "someone@contoso.com"), false, "a work address at 'common' is not personal");
+	eq(isPersonalMicrosoft(undefined, "fd64b9b8-7d31-494b-aedc-5c64cd1bd339", "steve@irely.com"), false, "a single-tenant work account is not personal");
+	eq(isPersonalMicrosoft(undefined, "common", "Microsoft 365"), false, "a row with no address yet is not personal");
+	eq(isPersonalMicrosoft(undefined, "common", ""), false, "an empty address is not personal");
+	eq(MSA_TENANT, "9188040d-6c67-4c5b-b112-36a304b66dad", "the tid claim personal accounts arrive with");
 }
 
 // --- availability ---

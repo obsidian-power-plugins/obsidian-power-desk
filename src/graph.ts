@@ -21,6 +21,19 @@ import { wallOfMs, msOfKey, keyOfMs } from "./core";
 // MailboxSettings.ReadWrite is what inbox rules live under: Mail.ReadWrite
 // does not reach them, however much it sounds like it should.
 export const GRAPH_SCOPE = "offline_access openid profile Calendars.ReadWrite Mail.ReadWrite Mail.Send MailboxSettings.ReadWrite ProfilePhoto.Read.All Contacts.Read Tasks.ReadWrite";
+/** What a personal Microsoft account can actually be asked for.
+ *
+ *  ProfilePhoto.Read.All is a directory permission: work and school only, and
+ *  admin-consent-only even there. A personal account has no directory and no
+ *  admin, so it can never consent to it; and asking anyway does not fail
+ *  politely. The device code is issued, the sign-in page accepts it, and the
+ *  refusal lands after the account is picked as "the code you entered has
+ *  expired", while the plugin's polling is still being told the sign-in is
+ *  merely pending. One unaskable scope therefore reads as a broken code and
+ *  hangs the sign-in until it times out, which is why this list exists rather
+ *  than one scope string for everybody. Sender photos go with it: they come
+ *  from the directory this account does not have. */
+export const GRAPH_PERSONAL_SCOPE = "offline_access openid profile Calendars.ReadWrite Mail.ReadWrite Mail.Send MailboxSettings.ReadWrite Contacts.Read Tasks.ReadWrite";
 export const GRAPH_READ_SCOPE = "offline_access openid profile Calendars.Read";
 const SCOPE = GRAPH_SCOPE;
 
@@ -71,13 +84,15 @@ export class GraphError extends Error {
 	}
 }
 
-/** Begin the device-code flow: returns a code and URL to show the user. */
-export async function startDeviceCode(clientId: string, tenant: string): Promise<DeviceCode> {
+/** Begin the device-code flow: returns a code and URL to show the user.
+ *  `scope` must be one the signing-in account can consent to; see
+ *  GRAPH_PERSONAL_SCOPE for why that is not always the full list. */
+export async function startDeviceCode(clientId: string, tenant: string, scope: string = SCOPE): Promise<DeviceCode> {
 	const r = await requestUrl({
 		url: `${authBase(tenant)}/devicecode`,
 		method: "POST",
 		contentType: "application/x-www-form-urlencoded",
-		body: form({ client_id: clientId, scope: SCOPE }),
+		body: form({ client_id: clientId, scope }),
 		throw: false,
 	});
 	if (r.status >= 400) throw new Error((bodyJson(r)?.error_description as string) || `Could not start sign-in (${r.status}).`);

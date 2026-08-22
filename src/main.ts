@@ -165,10 +165,13 @@ import { chunk, GRAPH_BATCH_MAX,
 	viewWindow,
 	weekDays,
 	workWeekDays,
+	MSA_TENANT,
+	isPersonalMicrosoft,
 } from "./core";
 import { parseIcsEvents } from "./ics";
 import {
 	DeviceCode,
+	GRAPH_PERSONAL_SCOPE,
 	GRAPH_READ_SCOPE,
 	GRAPH_SCOPE,
 	GraphError,
@@ -347,6 +350,12 @@ interface GraphAccount {
 	calendars: GraphCalendar[];
 	/** Show this account's inbox in the mail view; undefined means yes. */
 	mail?: boolean;
+	/** A personal Microsoft account, which can be asked for less than a work
+	 *  one (see GRAPH_PERSONAL_SCOPE). Set from the id_token's tid claim at
+	 *  sign-in, so it is known rather than guessed; undefined on rows that
+	 *  last signed in before this was recorded, which fall back to the
+	 *  address. */
+	personal?: boolean;
 }
 
 interface GoogleCalendar {
@@ -451,6 +460,16 @@ interface PCSettings {
 	notesInNewTab: boolean;
 	/** The Mail view's unread filter (Outlook's Unread search folder). */
 	mailUnreadOnly: boolean;
+	/** Where the mail view opens. "all" is the unified list, "last" is wherever
+	 *  you were when you closed it, and "folder" is one you picked and pinned
+	 *  with "Open here when mail opens". The folder fields carry that pick. */
+	mailStart: { mode: "all" | "last" | "folder"; accountId: string; folderId: string; name: string };
+	/** The folder the view was last looking at, kept for the "last" mode.
+	 *  Null means the unified list, which is also what "all" selects. */
+	mailLastFolder: { accountId: string; folderId: string; name: string } | null;
+	/** Drop the All inboxes row from the top of the pane. The palette still
+	 *  reaches the unified list, so hiding it never strands anyone. */
+	mailHideAllInboxes: boolean;
 	/** Collapsed mail folder ids, remembered like Outlook remembers them. */
 	mailCollapsed: string[];
 	/** When selecting a message marks it read: immediately, after a delay,
@@ -623,6 +642,9 @@ const DEFAULT_SETTINGS: PCSettings = {
 	noteNameTemplate: "{{date}} {{title}}",
 	notesInNewTab: false,
 	mailUnreadOnly: false,
+	mailStart: { mode: "all", accountId: "", folderId: "", name: "" },
+	mailLastFolder: null,
+	mailHideAllInboxes: false,
 	mailCollapsed: [],
 	markRead: "select",
 	markReadSeconds: 5,
@@ -795,7 +817,7 @@ export default class PowerDeskPlugin extends Plugin {
 		this.migrateSignatures();
 		this.offerToolbarActions();
 		await this.loadCacheFile();
-		const stale = this.settings.graphAccounts.filter((a) => a.refresh && a.grantedScope !== GRAPH_SCOPE);
+		const stale = this.settings.graphAccounts.filter((a) => a.refresh && a.grantedScope !== this.scopeFor(a));
 		if (stale.length) {
 			new Notice(`Power Desk: reconnect ${stale.map((a) => this.nameOf(a)).join(", ")} in settings to enable the newest permissions (event editing, mail, reply windows).`, 10000);
 		}
@@ -1674,6 +1696,16 @@ export default class PowerDeskPlugin extends Plugin {
 		return this.effectiveTenant();
 	}
 
+	isPersonalAccount(a: GraphAccount): boolean {
+		return isPersonalMicrosoft(a.personal, this.tenantFor(a), a.label);
+	}
+
+	/** The scope to ask this account for. Asking a personal account for a
+	 *  work-only permission does not degrade, it hangs the sign-in. */
+	scopeFor(a: GraphAccount): string {
+		return this.isPersonalAccount(a) ? GRAPH_PERSONAL_SCOPE : GRAPH_SCOPE;
+	}
+
 	graphConnected(): boolean {
 		return this.settings.graphAccounts.some((a) => !!a.refresh);
 	}
@@ -1703,7 +1735,7 @@ export default class PowerDeskPlugin extends Plugin {
 		if (!a.refresh) throw new Error(`Reconnect ${this.nameOf(a)} in settings first.`);
 		let t;
 		try {
-			t = await refreshTokens(this.clientIdFor(a), this.tenantFor(a), a.refresh, a.grantedScope || GRAPH_SCOPE);
+			t = await refreshTokens(this.clientIdFor(a), this.tenantFor(a), a.refresh, a.grantedScope || this.scopeFor(a));
 		} catch (e) {
 			// a rejected refresh token (invalid_grant, ...) is dead: clear it so the
 			// UI reads "signed out" instead of failing every refresh silently. A
@@ -1768,8 +1800,13 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  UI. An identity that is already connected refreshes its existing row
 	 *  instead of growing a duplicate, since sign-in pages love re-picking the
 	 *  account that is already in the browser. */
-	async deviceCodeSession(a: GraphAccount, isNew: boolean, onCode: (dc: DeviceCode) => void, cancelled: () => boolean): Promise<GraphAccount | null> {
-		const dc = await startDeviceCode(this.clientIdFor(a), this.tenantFor(a));
+	async deviceCodeSession(a: GraphAccount, isNew: boolean, onCode: (dc: DeviceCode) => void, cancelled: () => boolean, personalHint?: boolean): Promise<GraphAccount | null> {
+		// the scope has to be chosen before anyone signs in, so a brand-new
+		// account takes the wizard's word for which kind it is; the tid claim
+		// below replaces the guess with the answer once the tokens arrive
+		if (personalHint !== undefined && a.personal === undefined) a.personal = personalHint;
+		const scope = this.scopeFor(a);
+		const dc = await startDeviceCode(this.clientIdFor(a), this.tenantFor(a), scope);
 		onCode(dc);
 		const deadline = Date.now() + dc.expires_in * 1000;
 		const interval = Math.max(3, dc.interval) * 1000;
@@ -1781,16 +1818,24 @@ export default class PowerDeskPlugin extends Plugin {
 			const claims = decodeJwtPayload(res.id_token ?? "");
 			const who = (claims?.preferred_username ?? claims?.email ?? claims?.name) as string | undefined;
 			if (who) a.label = who;
+			// the tid claim names the directory that signed this in, so it
+			// tells work from personal outright; a token without one leaves
+			// whatever was already known standing rather than overwriting it
+			const tid = claims?.tid as string | undefined;
+			if (tid) a.personal = tid.toLowerCase() === MSA_TENANT;
 			const target = isNew ? (this.settings.graphAccounts.find((x) => x.label.toLowerCase() === a.label.toLowerCase()) ?? a) : a;
 			if (target !== a) {
 				// this session's tokens belong to the app the wizard chose
 				target.clientId = a.clientId;
 				target.tenant = a.tenant;
+				target.personal = a.personal;
 			}
 			target.access = res.access_token;
 			target.refresh = res.refresh_token;
 			target.expiry = Date.now() + res.expires_in * 1000;
-			target.grantedScope = GRAPH_SCOPE;
+			// what was actually asked for, so the "reconnect to enable" nudge
+			// does not keep pointing at a permission this account cannot hold
+			target.grantedScope = scope;
 			// pin the app this sign-in went through to the row (tenant first: its
 			// resolution depends on the row's clientId still being empty), so the
 			// account survives any later change to the shared app settings
@@ -6139,7 +6184,58 @@ class MailView extends ItemView {
 		ro.observe(this.contentEl);
 		this.register(() => ro.disconnect());
 		measure();
+		this.applyStartFolder();
 		this.render();
+	}
+
+	/** Open where the settings say to, rather than always at All inboxes.
+	 *
+	 *  A folder that no longer exists, or belongs to an account that has gone,
+	 *  falls back to the unified list rather than selecting nothing: an empty
+	 *  pane with a name over it would look like a fetch that failed. The
+	 *  Unread search folder and a category are both legitimate picks, and
+	 *  neither is in the folder tree, so only real folder ids are checked
+	 *  against it. */
+	private applyStartFolder() {
+		const st = this.plugin.settings.mailStart;
+		const pick = st.mode === "last" ? this.plugin.settings.mailLastFolder : st.mode === "folder" ? { accountId: st.accountId, folderId: st.folderId, name: st.name } : null;
+		if (!pick || !pick.folderId || !this.plugin.accountById(pick.accountId)) return;
+		const virtual = pick.folderId === UNREAD_FOLDER || !!folderIdCategory(pick.folderId);
+		if (!virtual && this.plugin.folderNamesFor(pick.accountId).size && !this.plugin.folderNamesFor(pick.accountId).has(pick.folderId)) return;
+		this.folderSel = { ...pick };
+		this.autoSelectPending = true;
+		this.plugin.ensureFolderMail(pick.accountId, pick.folderId, false);
+	}
+
+	/** Keep the "where you left off" note current. Called from render, so it
+	 *  follows every way of changing folder without each of them remembering
+	 *  to say so. */
+	private rememberFolder() {
+		if (this.plugin.settings.mailStart.mode !== "last") return;
+		const now = this.folderSel ? { accountId: this.folderSel.accountId, folderId: this.folderSel.folderId, name: this.folderSel.name } : null;
+		const was = this.plugin.settings.mailLastFolder;
+		const same = (!now && !was) || (!!now && !!was && now.accountId === was.accountId && now.folderId === was.folderId);
+		if (same) return;
+		this.plugin.settings.mailLastFolder = now;
+		this.plugin.queueSave();
+	}
+
+	/** The "open here" entry every folder-ish row carries, so the pick can be
+	 *  made where you already are rather than hunted for in settings. */
+	private startHereItem(menu: Menu, sel: { accountId: string; folderId: string; name: string } | null) {
+		const st = this.plugin.settings.mailStart;
+		const isHere = sel ? st.mode === "folder" && st.accountId === sel.accountId && st.folderId === sel.folderId : st.mode === "all";
+		menu.addItem((i) =>
+			i
+				.setTitle(isHere ? "Opens here when mail opens" : "Open here when mail opens")
+				.setIcon(isHere ? "check" : "pin")
+				.onClick(() => {
+					this.plugin.settings.mailStart = sel ? { mode: "folder", accountId: sel.accountId, folderId: sel.folderId, name: sel.name } : { mode: "all", accountId: "", folderId: "", name: "" };
+					this.plugin.queueSave();
+					this.plugin.refreshSettingsTab?.();
+					new Notice(sel ? `Power Desk: mail will open at ${sel.name}.` : "Power Desk: mail will open at All inboxes.");
+				})
+		);
 	}
 
 	async onClose() {
@@ -6591,6 +6687,7 @@ class MailView extends ItemView {
 
 	private render() {
 		if (!this.listEl || !this.listEl.isConnected) return;
+		this.rememberFolder();
 		const s = this.plugin.settings;
 		const todayKey = keyOfDate(new Date());
 		if (this.drill && this.screen === "read" && !this.selected) this.screen = "list";
@@ -7193,18 +7290,42 @@ class MailView extends ItemView {
 		this.lastFolderSig = sig;
 		const scroll = host.scrollTop;
 		host.empty();
-		const allRow = host.createDiv("pcal-folder-row");
-		allRow.toggleClass("is-selected", !this.folderSel);
-		const allIc = allRow.createSpan("pcal-folder-ic");
-		setIcon(allIc, "inbox");
-		allRow.createSpan({ cls: "pcal-folder-name", text: "All inboxes" });
-		allRow.addEventListener("click", () => {
-			this.plugin.clearMailSearch();
-			this.folderSel = null;
-			this.screen = "list";
-			this.autoSelectPending = true;
-			this.render();
-		});
+		// All inboxes can be hidden: for someone who always works in one
+		// mailbox it is a row that is never right, and the palette still opens
+		// the unified list, so hiding it removes a row rather than a capability
+		if (!this.plugin.settings.mailHideAllInboxes) {
+			const allRow = host.createDiv("pcal-folder-row");
+			allRow.toggleClass("is-selected", !this.folderSel);
+			const allIc = allRow.createSpan("pcal-folder-ic");
+			setIcon(allIc, "inbox");
+			allRow.createSpan({ cls: "pcal-folder-name", text: "All inboxes" });
+			allRow.addEventListener("click", () => {
+				this.plugin.clearMailSearch();
+				this.folderSel = null;
+				this.screen = "list";
+				this.autoSelectPending = true;
+				this.render();
+			});
+			allRow.addEventListener("contextmenu", (e) => {
+				e.preventDefault();
+				const menu = new Menu();
+				this.startHereItem(menu, null);
+				menu.addSeparator();
+				menu.addItem((i) =>
+					i
+						.setTitle("Hide All inboxes")
+						.setIcon("eye-off")
+						.onClick(() => {
+							this.plugin.settings.mailHideAllInboxes = true;
+							this.plugin.queueSave();
+							this.plugin.refreshSettingsTab?.();
+							new Notice("Power Desk: All inboxes hidden. The command palette still opens it.");
+							this.render();
+						})
+				);
+				menu.showAtMouseEvent(e);
+			});
+		}
 		const collapsed = new Set(this.plugin.settings.mailCollapsed);
 		const toggleCollapse = (key: string) => {
 			const next = new Set(this.plugin.settings.mailCollapsed);
@@ -7285,6 +7406,8 @@ class MailView extends ItemView {
 						)
 					);
 					menu.addItem((i) => i.setTitle("Remove from favorites").onClick(() => this.toggleFavorite(acc.id, fav.folderId)));
+					menu.addSeparator();
+					this.startHereItem(menu, { accountId: acc.id, folderId: fav.folderId, name });
 					menu.showAtMouseEvent(e);
 				});
 				row.draggable = true;
@@ -7418,6 +7541,7 @@ class MailView extends ItemView {
 					e.preventDefault();
 					const menu = new Menu();
 					menu.addItem((i) => i.setTitle(this.isFavorite(a.id, folder.id) ? "Remove from favorites" : "Add to favorites").onClick(() => this.toggleFavorite(a.id, folder.id)));
+					this.startHereItem(menu, { accountId: a.id, folderId: folder.id, name: folder.name });
 					menu.addItem((i) =>
 						i.setTitle("Hide folder").onClick(() => {
 							this.plugin.settings.mailHiddenFolders = [...this.plugin.settings.mailHiddenFolders, { accountId: a.id, folderId: folder.id }];
@@ -7536,6 +7660,7 @@ class MailView extends ItemView {
 							e.preventDefault();
 							const menu = new Menu();
 							menu.addItem((i) => i.setTitle(this.isFavorite(a.id, fid) ? "Remove from favorites" : "Add to favorites").onClick(() => this.toggleFavorite(a.id, fid)));
+							this.startHereItem(menu, { accountId: a.id, folderId: fid, name: cat.displayName });
 							menu.addItem((i) => i.setTitle("Manage categories...").setIcon("settings-2").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.render()).open()));
 							menu.showAtMouseEvent(e);
 						});
@@ -7597,6 +7722,7 @@ class MailView extends ItemView {
 				e.preventDefault();
 				const menu = new Menu();
 				menu.addItem((i) => i.setTitle(this.isFavorite(a.id, UNREAD_FOLDER) ? "Remove from favorites" : "Add to favorites").onClick(() => this.toggleFavorite(a.id, UNREAD_FOLDER)));
+				this.startHereItem(menu, { accountId: a.id, folderId: UNREAD_FOLDER, name: "Unread Mail" });
 				menu.showAtMouseEvent(e);
 			});
 			for (const sf of this.plugin.settings.mailSearchFolders.filter((x) => x.accountId === a.id)) {
@@ -13622,7 +13748,8 @@ class GraphAccountWizard extends Modal {
 				a,
 				true,
 				(dc) => this.showCode(dc, btnRow),
-				() => this.closed || this.stepNo !== 3
+				() => this.closed || this.stepNo !== 3,
+				this.kind === "personal"
 			);
 			if (acct) {
 				this.connected = acct;
@@ -14448,7 +14575,9 @@ class PCSettingTab extends PluginSettingTab {
 			if (a.refresh && !this.plugin.canMailAccount(a)) missing.push("mail");
 			if (a.refresh && this.plugin.canMailAccount(a) && !a.grantedScope.includes("Mail.ReadWrite")) missing.push("reply windows");
 			if (a.refresh && this.plugin.canMailAccount(a) && !a.grantedScope.includes("MailboxSettings")) missing.push("inbox rules");
-			if (a.refresh && this.plugin.canMailAccount(a) && !a.grantedScope.includes("ProfilePhoto")) missing.push("sender photos");
+			// sender photos come out of a work directory, so a personal account
+			// is not missing them, it simply has nowhere to get them from
+			if (a.refresh && this.plugin.canMailAccount(a) && !this.plugin.isPersonalAccount(a) && !a.grantedScope.includes("ProfilePhoto")) missing.push("sender photos");
 			if (a.refresh && this.plugin.canMailAccount(a) && !a.grantedScope.includes("Contacts")) missing.push("saved contacts");
 			if (a.refresh && this.plugin.canMailAccount(a) && !a.grantedScope.includes("Tasks")) missing.push("tasks");
 			const open = this.expandedAccounts.has(a.id);
@@ -15269,6 +15398,40 @@ class PCSettingTab extends PluginSettingTab {
 
 		const mail: Row[] = [
 			{
+				name: "When mail opens",
+				desc: "Which list the mail view shows when you open it.",
+				aliases: ["default folder", "start", "startup", "all inboxes", "home"],
+				help: "All inboxes is the unified list across every mailbox. Where you left off reopens whatever folder you were last looking at. A folder you picked is set by right-clicking any folder, favorite, or category and choosing \"Open here when mail opens\", which is also how you change it: the option only appears in this list once you have picked one, because there is nothing to name until then.",
+				build: (st) => {
+					const cur = s.mailStart;
+					st.addDropdown((d) => {
+						d.addOption("all", "All inboxes");
+						d.addOption("last", "Where you left off");
+						if (cur.mode === "folder" && cur.name) d.addOption("folder", cur.name);
+						d.setValue(cur.mode).onChange((v) => {
+							// switching away from a pick keeps its fields, so
+							// switching back does not ask for the folder again
+							s.mailStart = { ...cur, mode: v as "all" | "last" | "folder" };
+							save();
+						});
+					});
+				},
+			},
+			{
+				name: "Show All inboxes",
+				desc: "The unified row at the top of the folder pane. Hiding it leaves the command palette as the way there.",
+				aliases: ["unified", "hide", "remove all inboxes"],
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(!s.mailHideAllInboxes).onChange((v) => {
+							s.mailHideAllInboxes = !v;
+							save();
+							this.plugin.notify();
+						})
+					);
+				},
+			},
+			{
 				name: "Mail history",
 				desc: `Pull the last ${s.mailHistoryDays} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`,
 				help: "How far back mail is pulled. This is also the ceiling on what Power Assistant's 'Ask your email' can search, because that window only ever indexes messages this plugin has already fetched. Raising it makes the next sync fetch more, once.",
@@ -15415,7 +15578,7 @@ class PCSettingTab extends PluginSettingTab {
 			{
 				name: "Sender photos",
 				desc: "Show a sender's real profile picture in place of their initials. Needs a reconnect to grant the photo permission.",
-				help: "Pictures come from your organization's directory, so colleagues have one and outside senders almost never do; anyone without falls back to the lettered circle. It needs the delegated ProfilePhoto.Read.All permission on the Azure app registration and a Reconnect on each account, and until then this quietly does nothing rather than erroring. Faces are fetched a few at a time as a list is drawn, cached, and kept in the disposable cache file so they are there the next time you open Obsidian.",
+				help: "Pictures come from your organization's directory, so colleagues have one and outside senders almost never do; anyone without falls back to the lettered circle. It needs the delegated ProfilePhoto.Read.All permission on the Azure app registration and a Reconnect on each work account, and until then this quietly does nothing rather than erroring. A personal account has no directory to read, so it never contributes faces and is never asked for the permission. Faces are fetched a few at a time as a list is drawn, cached, and kept in the disposable cache file so they are there the next time you open Obsidian.",
 				build: (st) => {
 					st.addToggle((t) =>
 						t.setValue(s.mailPhotos).onChange((v) => {

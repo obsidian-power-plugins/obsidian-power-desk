@@ -444,6 +444,32 @@ export function dueReminders(events: PCEvent[], nowMs: number, leadMin: number, 
 	});
 }
 
+/* ---------- Microsoft account kind ---------- */
+
+/** The tenant every personal Microsoft account signs in under. The id_token's
+ *  tid claim carries it, which is how an account's kind is known for certain
+ *  rather than inferred from its address. */
+export const MSA_TENANT = "9188040d-6c67-4c5b-b112-36a304b66dad";
+
+/** The addresses Microsoft hands out for personal accounts. Only a fallback:
+ *  a personal account can carry a custom domain, so this decides nothing that
+ *  the tid claim has already answered. */
+const MSA_DOMAINS = new Set(["outlook.com", "hotmail.com", "live.com", "msn.com", "passport.com"]);
+
+/** Whether an account is a personal Microsoft account rather than a work or
+ *  school one, which decides what it can be asked to consent to.
+ *
+ *  `personal` is the tid claim's verdict from the last sign-in and settles it
+ *  outright. Without one, meaning a row connected before that was recorded or
+ *  an account about to sign in for the first time, the authority answers next,
+ *  since 'consumers' admits personal accounts only, and the address answers
+ *  last. `tenant` is the resolved authority, not the raw stored field. */
+export function isPersonalMicrosoft(personal: boolean | undefined, tenant: string, label: string): boolean {
+	if (personal !== undefined) return personal;
+	if (tenant.trim().toLowerCase() === "consumers") return true;
+	return MSA_DOMAINS.has((label.split("@")[1] ?? "").trim().toLowerCase());
+}
+
 /* ---------- mail (the triage inbox) ---------- */
 
 export interface PCMail {
