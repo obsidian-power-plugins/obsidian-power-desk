@@ -205,13 +205,20 @@ export async function fetchGoogleEvents(accessToken: string, calendarId: string,
 	return pagedGet(url, accessToken, "items", "read the calendar");
 }
 
-/** Google only notifies guests when asked: sendUpdates defaults to none at
- *  the API layer, so writes involving people must opt in. */
-const notifyQs = (notify: boolean) => (notify ? "?sendUpdates=all" : "");
+/** The query a write carries. Google only notifies guests when asked, so a
+ *  write involving people must opt in; and it only mints or reads a Meet link
+ *  when told the client speaks conference data, which a body asking for one is
+ *  the signal to add. */
+function writeQs(notify: boolean, body: Record<string, unknown>): string {
+	const qs: string[] = [];
+	if (notify) qs.push("sendUpdates=all");
+	if ("conferenceData" in body) qs.push("conferenceDataVersion=1");
+	return qs.length ? `?${qs.join("&")}` : "";
+}
 
 export async function insertGoogleEvent(accessToken: string, calendarId: string, body: Record<string, unknown>, notify = false): Promise<void> {
 	const r = await requestUrl({
-		url: `${API}/calendars/${encodeURIComponent(calendarId)}/events${notifyQs(notify)}`,
+		url: `${API}/calendars/${encodeURIComponent(calendarId)}/events${writeQs(notify, body)}`,
 		method: "POST",
 		contentType: "application/json",
 		headers: { Authorization: `Bearer ${accessToken}` },
@@ -225,7 +232,7 @@ export async function insertGoogleEvent(accessToken: string, calendarId: string,
  *  into an exception, like Graph). */
 export async function patchGoogleEvent(accessToken: string, calendarId: string, eventId: string, body: Record<string, unknown>, notify = false): Promise<void> {
 	const r = await requestUrl({
-		url: `${API}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}${notifyQs(notify)}`,
+		url: `${API}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}${writeQs(notify, body)}`,
 		method: "PATCH",
 		contentType: "application/json",
 		headers: { Authorization: `Bearer ${accessToken}` },

@@ -967,6 +967,29 @@ export function categoryColor(preset: string): string {
 	return CATEGORY_PRESETS[Number(m[1])] ?? "#8a8886";
 }
 
+/** Categories in the order the user arranged them, the same idiom the folder
+ *  tree uses. A name the user has dragged into place leads, in that order, and
+ *  everything untouched keeps the mailbox's own order behind it, so arranging
+ *  two categories does not scramble the other twenty and a category made later
+ *  still appears rather than vanishing. Matching is on the display name, which
+ *  is the only stable handle a category has (Graph refuses to rename one), and
+ *  case-insensitive to agree with how names are compared everywhere else. */
+export function orderCategories<T extends { displayName: string }>(cats: T[], custom?: string[]): T[] {
+	if (!custom?.length) return cats;
+	const rank = new Map(custom.map((n, i) => [n.toLowerCase(), i]));
+	return cats
+		.map((c, i) => ({ c, i })) // the mailbox's index is the tiebreaker, so the sort stays stable
+		.sort((a, b) => {
+			const ra = rank.get(a.c.displayName.toLowerCase());
+			const rb = rank.get(b.c.displayName.toLowerCase());
+			if (ra !== undefined && rb !== undefined) return ra - rb;
+			if (ra !== undefined) return -1;
+			if (rb !== undefined) return 1;
+			return a.i - b.i;
+		})
+		.map((x) => x.c);
+}
+
 /** Add or remove one category from a message's list, case-insensitively,
  *  keeping the order the mailbox had. Graph stores categories by their
  *  display name, so the comparison is on names and duplicates only differing
@@ -2622,6 +2645,9 @@ export interface EventDraft {
 	repeat?: RepeatKind;
 	/** How the slot reads to others; undefined leaves it alone (busy on create). */
 	showAs?: "busy" | "free" | "tentative";
+	/** Attach the provider's own online meeting and let it mint the join link:
+	 *  a Teams meeting on Microsoft 365, a Google Meet on Google. Create only. */
+	onlineMeeting?: boolean;
 }
 
 /** "a@x.com, Bob <b@x.com>; c@x.com" into invitees. Entries without an @ are
@@ -2689,6 +2715,12 @@ export function graphEventBody(d: EventDraft, tz: string): Record<string, unknow
 	const rec = d.repeat ? graphRecurrence(d.repeat, keyOfMs(d.startMs)) : null;
 	if (rec) body.recurrence = rec;
 	if (d.showAs) body.showAs = d.showAs;
+	// ask Exchange to host it on Teams: it mints the join link and threads it
+	// into the body itself, exactly as Outlook's own "Teams meeting" toggle does
+	if (d.onlineMeeting) {
+		body.isOnlineMeeting = true;
+		body.onlineMeetingProvider = "teamsForBusiness";
+	}
 	return body;
 }
 
@@ -2920,6 +2952,14 @@ export function googleEventBody(d: EventDraft, tz: string): Record<string, unkno
 	if (d.showAs) {
 		body.transparency = d.showAs === "free" ? "transparent" : "opaque";
 		body.status = d.showAs === "tentative" ? "tentative" : "confirmed";
+	}
+	// Google mints a Meet link when it sees a createRequest. The request id must
+	// be fresh each time: reuse a previous one and Google quietly ignores the
+	// ask and returns no conference, so a second identical event would land
+	// without a link. The write must also carry conferenceDataVersion=1, which
+	// insertGoogleEvent adds when it sees this field.
+	if (d.onlineMeeting) {
+		body.conferenceData = { createRequest: { requestId: crypto.randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } };
 	}
 	return body;
 }

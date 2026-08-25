@@ -98,6 +98,7 @@ import { chunk, GRAPH_BATCH_MAX,
 	arrivalSummary,
 	categoryColor,
 	CATEGORY_COLOR_NAMES,
+	orderCategories,
 	categoryFolderId,
 	folderIdCategory,
 	inCategory,
@@ -560,6 +561,10 @@ interface PCSettings {
 	 *  actually moved are listed; everything else stays alphabetical behind
 	 *  them, so arranging three folders does not freeze the other thirty. */
 	mailFolderOrder: { accountId: string; folderIds: string[] }[];
+	/** Categories dragged into an order of their own, per account, by name.
+	 *  Same idiom as mailFolderOrder: the named ones lead, the rest keep the
+	 *  mailbox's own order behind them, so a category made later still shows. */
+	mailCategoryOrder: { accountId: string; names: string[] }[];
 	/** Sections folded shut, by key. */
 	mailSectionsCollapsed: string[];
 	/** Scan incoming mail for orders and bills and hand matches to Power
@@ -671,6 +676,7 @@ const DEFAULT_SETTINGS: PCSettings = {
 	mailSectionsCollapsed: [],
 	mailRecentFolders: [],
 	mailFolderOrder: [],
+	mailCategoryOrder: [],
 	txnScan: false,
 	mailSignature: "",
 	mailAskReadReceipt: false,
@@ -2473,6 +2479,33 @@ export default class PowerDeskPlugin extends Plugin {
 		this.notify();
 	}
 
+	categoryOrderFor(accountId: string): string[] {
+		return this.settings.mailCategoryOrder.find((o) => o.accountId === accountId)?.names ?? [];
+	}
+
+	/** Put one category where another sits, by name. Unlike folders there is no
+	 *  parent to respect: categories are a flat list, so the whole current order
+	 *  is seeded and the dragged one spliced to the target's place, and that
+	 *  full list becomes the account's order. */
+	reorderCategory(accountId: string, dragName: string, targetName: string) {
+		if (dragName === targetName) return;
+		const names = this.categoriesFor(accountId).map((c) => c.displayName);
+		const from = names.findIndex((n) => n.toLowerCase() === dragName.toLowerCase());
+		const to = names.findIndex((n) => n.toLowerCase() === targetName.toLowerCase());
+		if (from < 0 || to < 0) return;
+		names.splice(to, 0, names.splice(from, 1)[0]);
+		this.settings.mailCategoryOrder = [...this.settings.mailCategoryOrder.filter((o) => o.accountId !== accountId), { accountId, names }];
+		this.queueSave();
+		this.notify();
+	}
+
+	/** Give one account's categories back the mailbox's own order. */
+	resetCategoryOrder(accountId: string) {
+		this.settings.mailCategoryOrder = this.settings.mailCategoryOrder.filter((o) => o.accountId !== accountId);
+		this.queueSave();
+		this.notify();
+	}
+
 	/** Unread across one folder and everything under it, for collapsed rows. */
 	folderUnreadRollup(accountId: string, folderId: string): number {
 		const st = this.mailFolderCache.get(accountId);
@@ -4075,7 +4108,9 @@ export default class PowerDeskPlugin extends Plugin {
 	private categoryCache = new Map<string, OutlookCategory[]>();
 
 	categoriesFor(accountId: string): OutlookCategory[] {
-		return this.categoryCache.get(accountId) ?? [];
+		// ordered here, at the one place every view reads them, so the tree, the
+		// Categorize menu, the manage dialog and the filter list all agree
+		return orderCategories(this.categoryCache.get(accountId) ?? [], this.categoryOrderFor(accountId));
 	}
 
 	/** The mailbox's category list, read once per session per account. */
@@ -5382,6 +5417,8 @@ class MailView extends ItemView {
 	private mailDrag: PCMail[] | null = null;
 	/** The folder being dragged to a new position among its siblings. */
 	private folderDrag: { accountId: string; folderId: string } | null = null;
+	/** The category being dragged to a new position in its account's list. */
+	private categoryDrag: { accountId: string; name: string } | null = null;
 	/** Ctrl and Shift clicks build a bulk selection for the toolbar actions. */
 	private multiSel = new Set<string>();
 	private selAnchorId: string | null = null;
@@ -7633,6 +7670,11 @@ class MailView extends ItemView {
 							.onClick(() => this.askNewCategory(a.id))
 					);
 					menu.addItem((i) => i.setTitle("Manage categories...").setIcon("settings-2").onClick(() => new CategoriesModal(this.app, this.plugin, () => this.render()).open()));
+					// dragging a category onto another sets an order; this puts it
+					// back, and stays disabled until there is an order to undo
+					const arranged = this.plugin.categoryOrderFor(a.id).length > 0;
+					menu.addSeparator();
+					menu.addItem((i) => i.setTitle("Use the mailbox's own order again").setDisabled(!arranged).onClick(() => this.plugin.resetCategoryOrder(a.id)));
 					menu.showAtMouseEvent(e);
 				});
 				if (!catCollapsed) {
@@ -7648,6 +7690,36 @@ class MailView extends ItemView {
 						const held = this.plugin.categoryCount(a.id, cat.displayName);
 						if (held > 0) row.createSpan({ cls: "pcal-folder-count", text: String(held) });
 						this.acceptCategoryDrop(row, a.id, cat.displayName);
+						// categories rearrange by dragging one onto another, a
+						// display order only that never touches the mailbox; the
+						// drag state is what keeps this apart from a message dropped
+						// onto the row to tag it (acceptCategoryDrop, above)
+						row.draggable = true;
+						row.addEventListener("dragstart", (e) => {
+							this.categoryDrag = { accountId: a.id, name: cat.displayName };
+							e.stopPropagation();
+							if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+						});
+						row.addEventListener("dragend", () => {
+							this.categoryDrag = null;
+							row.removeClass("pcal-drop-target");
+						});
+						row.addEventListener("dragover", (e) => {
+							const d = this.categoryDrag;
+							if (!d || d.accountId !== a.id || d.name === cat.displayName) return;
+							e.preventDefault();
+							row.addClass("pcal-drop-target");
+						});
+						row.addEventListener("dragleave", () => row.removeClass("pcal-drop-target"));
+						row.addEventListener("drop", (e) => {
+							const d = this.categoryDrag;
+							row.removeClass("pcal-drop-target");
+							if (!d || d.accountId !== a.id) return;
+							e.preventDefault();
+							e.stopPropagation();
+							this.categoryDrag = null;
+							this.plugin.reorderCategory(a.id, d.name, cat.displayName);
+						});
 						row.addEventListener("click", () => {
 							this.plugin.clearMailSearch();
 							this.folderSel = { accountId: a.id, folderId: fid, name: cat.displayName };
@@ -12682,10 +12754,12 @@ class EventModal extends Modal {
 	private invitesInitial: string;
 	private repeat: RepeatKind = "none";
 	private showAs: "busy" | "free" | "tentative";
+	private online = false;
 	private targetKey: string | null;
 	private fieldsEl!: HTMLElement;
 	private fieldsHooked = false;
 	private availEl: HTMLElement | null = null;
+	private meetingEl: HTMLElement | null = null;
 	private descEl!: HTMLElement;
 	private availData: { windowStart: number; windowEnd: number; rows: { email: string; runs: BusyRun[]; error: string | null }[] } | null = null;
 
@@ -12736,7 +12810,12 @@ class EventModal extends Modal {
 		if (!this.ev && targets.length > 1) {
 			new Setting(c).setName("Calendar").addDropdown((d) => {
 				for (const t of targets) d.addOption(t.key, t.label);
-				d.setValue(this.targetKey ?? targets[0].key).onChange((v) => (this.targetKey = v));
+				d.setValue(this.targetKey ?? targets[0].key).onChange((v) => {
+					this.targetKey = v;
+					// the meeting toggle names the provider it will land on, so it
+					// follows the calendar from Teams to Meet and back
+					this.renderMeetingField();
+				});
 			});
 		}
 		new Setting(c).setName("All day").addToggle((t) =>
@@ -12757,6 +12836,8 @@ class EventModal extends Modal {
 		this.fieldsEl = c.createDiv();
 		this.renderTimeFields();
 		new Setting(c).setName("Location").addText((t) => t.setValue(this.location).onChange((v) => (this.location = v)));
+		this.meetingEl = c.createDiv();
+		this.renderMeetingField();
 		new Setting(c)
 			.setName("Invite")
 			.setDesc("Email addresses, comma separated. Invitations go out when you save.")
@@ -12868,6 +12949,32 @@ class EventModal extends Modal {
 		this.renderAvail(); // the draft marker and verdicts follow the times
 	}
 
+	/** The online-meeting toggle, whose name follows the calendar it will land
+	 *  on: a Teams meeting on Microsoft 365, a Google Meet on Google. Redrawn
+	 *  when the calendar changes. New events only — a provider mints the link
+	 *  once with the event, and adding or pulling one on an existing meeting is
+	 *  a different, riskier write than this offers. Teams is a work/school
+	 *  feature, so a personal Microsoft account is not offered a toggle that
+	 *  would only fail; a source that hosts neither shows nothing at all. */
+	private renderMeetingField() {
+		const host = this.meetingEl;
+		if (!host) return;
+		host.empty();
+		if (this.ev) return;
+		const targets = this.plugin.writableTargets();
+		const def = ((this.targetKey ? targets.find((t) => t.key === this.targetKey) : null) ?? this.plugin.defaultWriteTarget())?.def;
+		let kind: "teams" | "meet" | null = null;
+		if (def?.kind === "m365" && !this.plugin.isPersonalAccount(def.account)) kind = "teams";
+		else if (def?.kind === "google") kind = "meet";
+		if (!kind) {
+			this.online = false;
+			return;
+		}
+		const label = kind === "teams" ? "Teams meeting" : "Google Meet";
+		const desc = kind === "teams" ? "Host it on Microsoft Teams. The join link is created with the event." : "Add Google Meet video conferencing. The join link is created with the event.";
+		new Setting(host).setName(label).setDesc(desc).addToggle((t) => t.setValue(this.online).onChange((v) => (this.online = v)));
+	}
+
 	/** Ask Graph for the invitees' free/busy over the draft's day and draw it. */
 	private async checkAvailability() {
 		const targets = this.plugin.writableTargets();
@@ -12964,6 +13071,7 @@ class EventModal extends Modal {
 			attendees,
 			repeat: this.ev ? undefined : this.repeat,
 			showAs: this.showAs,
+			onlineMeeting: this.ev ? undefined : this.online || undefined,
 		};
 		const ok = this.ev ? await this.plugin.updateCalEvent(this.ev, draft) : await this.plugin.createEventAt(this.targetKey, draft);
 		if (ok) this.close();

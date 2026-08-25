@@ -82,6 +82,7 @@ import {
 	toGraphDateTime,
 	fromGraphDateTime,
 	categoryColor,
+	orderCategories,
 	categoryFolderId,
 	folderIdCategory,
 	inCategory,
@@ -636,6 +637,17 @@ eq(mimeForExtension(""), "application/octet-stream", "and so does no extension a
 	eq(CATEGORY_COLOR_NAMES[0], "Red", "and the names line up with Outlook's own order");
 	eq(CATEGORY_COLOR_NAMES[7], "Blue", "at both ends of the light half");
 	eq(new Set(CATEGORY_COLOR_NAMES).size, 25, "no two colors share a name");
+
+	// orderCategories: a dragged name leads, the rest keep the mailbox's order
+	const cats = [{ displayName: "Alpha" }, { displayName: "Bravo" }, { displayName: "Charlie" }, { displayName: "Delta" }];
+	const names = (cs: { displayName: string }[]) => cs.map((c) => c.displayName);
+	eq(names(orderCategories(cats)), ["Alpha", "Bravo", "Charlie", "Delta"], "no custom order leaves the mailbox's order untouched");
+	eq(names(orderCategories(cats, [])), ["Alpha", "Bravo", "Charlie", "Delta"], "an empty order is the same as none");
+	eq(names(orderCategories(cats, ["Charlie", "Alpha"])), ["Charlie", "Alpha", "Bravo", "Delta"], "named ones lead in order, the rest keep the mailbox's order");
+	eq(names(orderCategories(cats, ["charlie"])), ["Charlie", "Alpha", "Bravo", "Delta"], "matching a name ignores case");
+	eq(names(orderCategories(cats, ["Zulu"])), ["Alpha", "Bravo", "Charlie", "Delta"], "a name no longer in the mailbox places nothing");
+	eq(names(orderCategories(cats, ["Delta", "Bravo", "Charlie", "Alpha"])), ["Delta", "Bravo", "Charlie", "Alpha"], "a full arrangement is honored end to end");
+	eq(names(cats), ["Alpha", "Bravo", "Charlie", "Delta"], "ordering does not mutate the input list");
 
 	eq(toggleCategory(undefined, "Red"), ["Red"], "toggling onto nothing starts the list");
 	eq(toggleCategory([], "Red"), ["Red"], "and onto an empty list too");
@@ -1503,6 +1515,17 @@ eq(googleRecurrence("weekdays", "2026-07-17"), ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,W
 	eq(g.recurrence, ["RRULE:FREQ=DAILY"], "google body carries the rrule");
 	const noTouch = graphEventBody({ title: "Sync", startMs, endMs: startMs + 30 * 60000, allDay: false }, "UTC");
 	eq("attendees" in noTouch, false, "untouched attendees stay out of a patch body");
+	// online meeting: a Teams meeting on Graph, a Meet on Google
+	const teams = graphEventBody({ title: "Sync", startMs, endMs: startMs + 30 * 60000, allDay: false, onlineMeeting: true }, "UTC");
+	eq(teams.isOnlineMeeting, true, "graph online meeting sets isOnlineMeeting");
+	eq(teams.onlineMeetingProvider, "teamsForBusiness", "graph online meeting asks for Teams");
+	eq("isOnlineMeeting" in noTouch, false, "no online meeting, nothing sent to graph");
+	eq("onlineMeetingProvider" in noTouch, false, "no provider sent to graph either");
+	const meet = googleEventBody({ title: "Sync", startMs, endMs: startMs + 30 * 60000, allDay: false, onlineMeeting: true }, "UTC");
+	const conf = meet.conferenceData as { createRequest: { requestId: string; conferenceSolutionKey: { type: string } } };
+	eq(conf.createRequest.conferenceSolutionKey.type, "hangoutsMeet", "google online meeting asks for Meet");
+	eq(typeof conf.createRequest.requestId === "string" && conf.createRequest.requestId.length > 0, true, "google Meet carries a request id");
+	eq("conferenceData" in googleEventBody({ title: "Sync", startMs, endMs: startMs + 30 * 60000, allDay: false }, "UTC"), false, "no online meeting, no conferenceData on google");
 }
 {
 	const raw = {

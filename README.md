@@ -16,7 +16,7 @@ Click any event for its card: time, location, organizer, attendees, description,
 
 - **Create** by dragging across empty grid, double-clicking a slot, or pressing `C`.
 - **Move and resize** by dragging. Times snap to 15 minutes, and Escape cancels.
-- **Invite people**, set a **repeat** (daily, weekly, monthly, yearly), **RSVP** to invitations, and set yourself **Busy, Free, or Tentative**.
+- **Invite people**, set a **repeat** (daily, weekly, monthly, yearly), **add an online meeting** (a Teams meeting on Microsoft 365, a Google Meet on Google), **RSVP** to invitations, and set yourself **Busy, Free, or Tentative**.
 - **Check availability** while drafting a Microsoft 365 meeting: free/busy bars for each invitee, with your draft slot overlaid.
 - Editing or deleting a repeating event asks whether you mean this occurrence or the whole series, exactly like Outlook.
 
@@ -50,7 +50,7 @@ Reply, forward, archive, delete, flag, categorize, and move, all writing back to
 
 - **Snooze** parks a message until later today, tomorrow, the weekend, or a time you pick. It moves to a real **Snoozed** folder in your mailbox rather than hiding inside the plugin, so the worst case is a visible folder you can file by hand.
 - **Move to folder** with a fuzzy picker over the whole tree, or by dragging. Recent destinations sit at the top, since the same three or four take almost everything.
-- **Categories** are the mailbox's own, in Outlook's colors, and **each account's tree carries a Categories branch**: click one to see everything carrying that label, wherever in the mailbox it is filed. Pin the ones you use to Favorites. Dragging a message onto a category tags it rather than moving it, because a label is not a destination, so the mail stays exactly where you filed it.
+- **Categories** are the mailbox's own, in Outlook's colors, and **each account's tree carries a Categories branch**: click one to see everything carrying that label, wherever in the mailbox it is filed. Pin the ones you use to Favorites, and drag one above another to set the order the branch reads in. Dragging a message onto a category tags it rather than moving it, because a label is not a destination, so the mail stays exactly where you filed it.
 - **Unsubscribe** appears beside the sender's name on any message whose headers say how to leave, rather than in six-point grey at the bottom. It always asks first and names the exact destination, because those addresses come from the message itself.
 - **Inbox rules** are the same rules Outlook shows, edited here. They run in the mailbox, so mail is filed whether or not Obsidian is open. "Create a rule from this" on any message opens the editor with the sender filled in.
 - **Report** as junk, phishing, or not junk. The junk one uses a supported API; the other two are marked *(preview)* because they run on a beta endpoint Microsoft may change.
