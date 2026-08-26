@@ -791,6 +791,7 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  it; see watchDataFile(). */
 	private dataStamp: string | null = null;
 	private autoTimer: number | null = null;
+	private notifyTimer: number | null = null;
 
 	async onload() {
 		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PCSettings> | null));
@@ -825,7 +826,14 @@ export default class PowerDeskPlugin extends Plugin {
 		await this.loadCacheFile();
 		const stale = this.settings.graphAccounts.filter((a) => a.refresh && a.grantedScope !== this.scopeFor(a));
 		if (stale.length) {
-			new Notice(`Power Desk: reconnect ${stale.map((a) => this.nameOf(a)).join(", ")} in settings to enable the newest permissions (event editing, mail, reply windows).`, 10000);
+			const message = `Power Desk: reconnect ${stale.map((a) => this.nameOf(a)).join(", ")} in settings to enable the newest permissions (event editing, mail, reply windows).`;
+			const key = `pdesk-scope-notice:${message}`;
+			// The account warning is actionable, but repeating it over the document
+			// on every phone launch turns a standing setup choice into startup spam.
+			if (!Platform.isMobileApp || this.app.loadLocalStorage(key) !== "1") {
+				new Notice(message, 10000);
+				if (Platform.isMobileApp) this.app.saveLocalStorage(key, "1");
+			}
 		}
 
 		this.registerView(VIEW_TYPE, (leaf) => new PowerCalendarView(leaf, this));
@@ -932,7 +940,12 @@ export default class PowerDeskPlugin extends Plugin {
 			if (this.autoTimer != null) window.clearInterval(this.autoTimer);
 		});
 		this.registerInterval(window.setInterval(() => this.checkReminders(), 30_000));
-		this.app.workspace.onLayoutReady(() => this.checkReminders());
+		this.app.workspace.onLayoutReady(() => {
+			if (Platform.isMobileApp) {
+				const t = window.setTimeout(() => this.checkReminders(), 15_000);
+				this.register(() => window.clearTimeout(t));
+			} else this.checkReminders();
+		});
 		// snoozed mail comes back on its own clock rather than off the mail
 		// refresh, which would recurse: waking a message refreshes the mail
 		this.registerInterval(window.setInterval(() => void this.wakeSnoozes(), 60_000));
@@ -976,7 +989,12 @@ export default class PowerDeskPlugin extends Plugin {
 		// a message still inside its undo window when the plugin unloads has
 		// not been sent yet, so let it go rather than losing it
 		this.register(() => this.flushPendingSends());
-		this.app.workspace.onLayoutReady(() => void this.wakeSnoozes());
+		this.app.workspace.onLayoutReady(() => {
+			if (Platform.isMobileApp) {
+				const t = window.setTimeout(() => void this.wakeSnoozes(), 30_000);
+				this.register(() => window.clearTimeout(t));
+			} else void this.wakeSnoozes();
+		});
 		// know about a running out-of-office from the first paint, so the
 		// banner is there rather than appearing a beat later
 		this.app.workspace.onLayoutReady(() => {
@@ -1006,6 +1024,11 @@ export default class PowerDeskPlugin extends Plugin {
 		// open views keep the cache warm; with none open, keep today fetched
 		if (!this.app.workspace.getLeavesOfType(VIEW_TYPE).length) this.ensureWindow(today, today, false);
 		const due = dueReminders(this.eventsForWindow(today, today), Date.now(), s.reminderMinutes, this.remindersFired);
+		if (Platform.isMobileApp && due.length > 1) {
+			for (const ev of due) this.remindersFired.add(ev.id);
+			this.showReminderBatch(due);
+			return;
+		}
 		for (const ev of due) {
 			this.remindersFired.add(ev.id);
 			this.showReminder(ev);
@@ -1115,6 +1138,32 @@ export default class PowerDeskPlugin extends Plugin {
 		notice.messageEl.closest(".notice")?.addClass("pcal-remind-notice", "pw-self-styled");
 	}
 
+	/** Phones get one compact reminder surface even when calendars contain
+	 *  overlapping events. Desktop keeps one full card per event, where the
+	 *  notice rail has room for them. */
+	private showReminderBatch(events: PCEvent[]) {
+		let notice: Notice | null = null;
+		const ordered = [...events].sort((a, b) => a.startMs - b.startMs);
+		const frag = createFragment((f) => {
+			const card = f.createDiv({ cls: "pcal-remind" });
+			const head = card.createDiv({ cls: "pcal-remind-head" });
+			setIcon(head.createDiv({ cls: "pcal-remind-icon" }), "calendar-clock");
+			head.createDiv({ cls: "pcal-remind-title", text: `${ordered.length} meetings starting soon` });
+			for (const ev of ordered.slice(0, 3)) {
+				const row = card.createDiv({ cls: "pcal-remind-sub" });
+				row.createSpan({ cls: "pcal-remind-when", text: fmtTimeOfMs(ev.startMs, this.settings.use24h) });
+				row.createSpan({ cls: "pcal-remind-at", text: ev.title });
+				if (ev.joinUrl) {
+					row.createEl("button", { text: "Join", cls: "mod-cta" }).addEventListener("click", () => window.open(ev.joinUrl, "_blank"));
+				}
+			}
+			if (ordered.length > 3) card.createDiv({ cls: "pcal-remind-sub", text: `And ${ordered.length - 3} more` });
+			card.createDiv({ cls: "pcal-remind-btns" }).createEl("button", { text: "Dismiss" }).addEventListener("click", () => notice?.hide());
+		});
+		notice = new Notice(frag, 0);
+		notice.messageEl.closest(".notice")?.addClass("pcal-remind-notice", "pw-self-styled");
+	}
+
 	onunload() {
 		for (const id of this.snoozeTimers) window.clearTimeout(id);
 		this.snoozeTimers.clear();
@@ -1126,6 +1175,7 @@ export default class PowerDeskPlugin extends Plugin {
 			window.clearTimeout(this.cachePersistTimer);
 			void this.persistCacheFile();
 		}
+		if (this.notifyTimer != null) window.clearTimeout(this.notifyTimer);
 	}
 
 	/* ---------------- settings persistence (synced data.json holds tokens,
@@ -1444,7 +1494,31 @@ export default class PowerDeskPlugin extends Plugin {
 
 	notify() {
 		this.searchIdxDirty = true;
-		for (const l of Array.from(this.listeners)) l();
+		if (!Platform.isMobileApp) {
+			for (const l of Array.from(this.listeners)) l();
+			return;
+		}
+		// Calendar and mail fetches notify at start, per account/source, and at
+		// finish. A vault sync adds another dense stream. Keep the cached paint in
+		// place and deliver one trailing redraw when the phone is settled.
+		if (this.notifyTimer != null) return;
+		this.notifyTimer = window.setTimeout(() => {
+			this.notifyTimer = null;
+			if (this.mobileStartupSettling()) {
+				this.notify();
+				return;
+			}
+			for (const l of Array.from(this.listeners)) l();
+		}, 250);
+	}
+
+	private mobileStartupSettling(): boolean {
+		const pc = (
+			this.app as unknown as {
+				plugins?: { plugins?: Record<string, { running?: boolean; mobileStartupPending?: boolean }> };
+			}
+		).plugins?.plugins?.powerconnect;
+		return pc?.running === true || pc?.mobileStartupPending === true;
 	}
 
 	/** Make sure every source has fresh events covering the window; fetches run
