@@ -1,4 +1,14 @@
-import { App, ButtonComponent, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, SliderComponent, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, htmlToMarkdown, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
+import { App, ButtonComponent, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice as ObsidianNotice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, SliderComponent, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, htmlToMarkdown, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
+
+let pluginNoticesEnabled = () => true;
+
+class Notice extends ObsidianNotice {
+	constructor(message: string | DocumentFragment, duration?: number) {
+		super(message, duration);
+		if (!pluginNoticesEnabled()) this.hide();
+	}
+}
+
 import { chunk, GRAPH_BATCH_MAX,
 	DayCell,
 	EventDraft,
@@ -591,6 +601,7 @@ interface PCSettings {
 	peopleFolder: string;
 	/** The view phones open with (agenda reads best on a narrow screen). */
 	phoneDefaultMode: ViewMode;
+	showNotifications: boolean;
 }
 
 const DEFAULT_SETTINGS: PCSettings = {
@@ -686,6 +697,7 @@ const DEFAULT_SETTINGS: PCSettings = {
 	mailSignatureUse: [],
 	peopleFolder: "",
 	phoneDefaultMode: "agenda",
+	showNotifications: true,
 };
 
 const freshId = () => Math.random().toString(36).slice(2, 10);
@@ -795,6 +807,7 @@ export default class PowerDeskPlugin extends Plugin {
 
 	async onload() {
 		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PCSettings> | null));
+		pluginNoticesEnabled = () => this.settings.showNotifications;
 		// baseline is the DISK state, cloned before any migration, so the
 		// migrated keys read as our change and actually persist
 		this.baseline = structuredClone(this.settings);
@@ -15066,6 +15079,16 @@ class PCSettingTab extends PluginSettingTab {
 		// the theme cards every .setting-item, so a bare <p> floats outside the
 		// boxes and breaks the column the rest of the rows line up on.
 		const intro = (text: string): Row => ({ name: "", desc: text, cls: "pcal-section-intro" });
+		const general: Row[] = [
+			{
+				name: "Show notifications",
+				desc: "Show popup notices from Power Desk. Turn off to keep Obsidian clear, especially on phones.",
+				help: "When off, Power Desk suppresses every popup notice, including reminders, progress, success, warning, and error notices.",
+				build: (st) => {
+					st.addToggle((t) => t.setValue(s.showNotifications).onChange((v) => ((s.showNotifications = v), save())));
+				},
+			},
+		];
 
 		/* ---------------- Microsoft 365 ---------------- */
 
@@ -16062,6 +16085,7 @@ class PCSettingTab extends PluginSettingTab {
 		];
 
 		return [
+			{ id: "general", label: "General", groups: [{ heading: "Notifications", rows: general }] },
 			{
 				id: "microsoft",
 				label: "Microsoft 365",
